@@ -74,7 +74,6 @@ Nothing hides execution behind a read-only name. Tool annotations mark process-s
 ## Known residual risks
 
 - Project scripts can still run during the operations listed in the table above. Do not point the server at untrusted projects.
-- On Windows, `path.relative`-based containment is case-sensitive. This is untested on Windows.
 - Same-user processes can reach the editor bridge if they read the token file.
 
 ## Security regression tests

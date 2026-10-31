@@ -92,10 +92,24 @@ godot_assets import (empty project)          median  ~1.4 s
 
 Each headless operation costs about 250 ms, almost all of it Godot process startup. Batching, such as 100 actions in one `godot_scene_edit`, amortises that cost. A persistent worker process would remove the per-call startup, but it would need a lifecycle and cache-invalidation design for files changed behind its back. It is deliberately not implemented: correctness was prioritised over that latency.
 
+## Continuous integration
+
+`.github/workflows/ci.yml` runs the whole pipeline (typecheck, format, build, GDScript parse, unit and integration tests) on four jobs:
+
+| Job | Result (run 41190993555, commit 47fac17) |
+|---|---|
+| ubuntu-24.04, Godot 4.7.2 (xvfb) | unit 33/33, integration 89/89 |
+| macos-14, Godot 4.7.2 | unit 33/33, integration 89/89 |
+| windows-2022, Godot 4.7.2 | unit 33/33, integration 89/89 |
+| ubuntu-24.04, Godot 4.8 beta 2 (non-blocking) | unit 33/33, integration 89/89 |
+
+Screenshot tests rendered on all four. The CI machines have no export templates, so the export test there only checks that missing templates are reported; a real export has only been verified locally on macOS.
+
+Bringing CI up exposed and fixed real Windows bugs: path containment was case-sensitive, and Windows 8.3 short paths (`RUNNER~1`) did not match canonical project roots. Test-only fixes covered CRLF checkouts and path-separator assumptions.
+
 ## Not executed
 
-- **CI.** `.github/workflows/ci.yml` (Ubuntu, Godot 4.7.2, xvfb) is written but has never run.
-- **Platforms.** Windows and Linux, Godot 4.8 beta, the Godot .NET build and `godot_dotnet build` have not been tested.
+- **Platforms.** The Godot .NET build and `godot_dotnet build` have not been tested.
 - **Conformance suite.** The third-party conformance suite `@hasmcp/mcp-spec-test` (cited in upstream issues #135/#136) was downloaded and inspected but **not executed**: the execution environment's permission policy blocked running externally downloaded code. To run it yourself:
   ```bash
   npx @hasmcp/mcp-spec-test@0.1.5 -c "node $(pwd)/build/index.js" --spec-version 2026-07-28

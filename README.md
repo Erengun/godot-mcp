@@ -70,8 +70,7 @@ Godot MCP is a [Model Context Protocol](https://modelcontextprotocol.io) server 
 Version 2.0 is a rewrite on top of the official MCP TypeScript SDK v2. It supports MCP 2026-07-28 and 2025-era clients. See [docs/architecture.md](docs/architecture.md) for the design, [docs/security.md](docs/security.md) for the security model and [docs/limitations.md](docs/limitations.md) for what it does not do.
 
 > **Status: 2.0.0-dev, NOT released.** Version 2.0 is **not on npm**. `npx godot-mcp` installs the old 0.x release. To use 2.0, install it from source (below).
-> Only macOS with Godot 4.7.2 has been tested; see [docs/compatibility.md](docs/compatibility.md).
-> The `feat/production-grade-mcp` branch named below is not on the remote yet. The source-install steps work only after that branch has been committed and pushed.
+> CI passes on Ubuntu, macOS and Windows with Godot 4.7.2, and on Ubuntu with Godot 4.8 beta 2; see [docs/compatibility.md](docs/compatibility.md).
 
 ## Features (tools)
 

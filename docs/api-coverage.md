@@ -161,7 +161,8 @@ The "Evidence" column names the test file under `test/` that exercises the capab
 
 | Platform | State |
 |---|---|
-| macOS + Godot 4.7.2 | IT |
-| Linux, Windows | U (not executed here) |
-| Godot 4.8 beta 2 | U (not installed; download not authorised) |
+| macOS + Godot 4.7.2 | IT (local + CI) |
+| Ubuntu 24.04 + Godot 4.7.2 | IT (CI) |
+| Windows Server 2022 + Godot 4.7.2 | IT (CI) |
+| Ubuntu 24.04 + Godot 4.8 beta 2 | IT (CI, non-blocking job) |
 | Godot .NET | U |

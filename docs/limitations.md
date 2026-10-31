@@ -35,8 +35,7 @@ This page lists what godot-mcp 2.0 does not do, does only partly, or does with c
 
 ## Platform and version coverage
 
-- **Tested environment.** Only macOS (Apple Silicon) with Godot 4.7.2 standard has been tested. Linux and Windows code paths exist (process groups, Godot locations, export template locations), but they have not been executed. On Windows, path containment is case-sensitive.
-- **Godot 4.8 beta 2.** Not tested; it was not installed, and downloading it was not authorised. No 4.8-only API is used.
+- **Tested environment.** The full suite passes on macOS (local M3 and CI macos-14), Ubuntu 24.04 and Windows Server 2022 with Godot 4.7.2, and on Ubuntu with Godot 4.8 beta 2. Other distributions, Linux arm64 and Windows desktop editions are not covered.
 - **Godot < 4.5.** Not supported. The worker relies on `Logger` / `OS.add_logger`, which arrived in 4.5.
 - **C# / .NET.** `godot_dotnet build` (`dotnet build` plus MSBuild diagnostics) is implemented but unverified, because no Godot .NET build was available. C# scripts are skipped by GDScript validation, and reflection is GDScript-only.
 

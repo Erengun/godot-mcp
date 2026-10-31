@@ -9,13 +9,13 @@
 
 The functionality verified on macOS + Godot 4.7.2 is substantial: 89 integration tests against real Godot, four end-to-end fixtures that run and render, and a real editor bridge. The acceptance criteria still require evidence that is missing:
 
-1. **Platforms.** No Linux or Windows execution. The CI workflow is written but has never run.
-2. **Godot versions.** No Godot 4.8 beta 2 run (not installed; downloading it was not authorised).
+1. **Platforms.** Resolved after the initial audit: CI run 41190993555 passed the full suite on Ubuntu 24.04, macOS 14 and Windows Server 2022 with Godot 4.7.2.
+2. **Godot versions.** Resolved: the same run passed the full suite on Godot 4.8 beta 2 (Ubuntu).
 3. **C#.** No .NET (C#) run: `godot_dotnet build` is unverified.
 4. **Third-party conformance.** The MCP conformance suite `@hasmcp/mcp-spec-test`, which reported upstream issues #135/#136, was not executed because the environment's permission policy blocked running downloaded code. Protocol behaviour is covered by our own negotiation tests only.
 5. **Untested surface.** Several registered capabilities are only "implemented, insufficiently tested". `docs/api-coverage.md` lists them, for example most 2D/3D node types beyond the fixtures, bezier/blend-shape/audio tracks, mouse and joypad-axis input events, and UID resolve.
 
-Release becomes possible once items 1–4 pass and the coverage gaps in item 5 are either tested or explicitly scoped out.
+Items 1 and 2 are now covered by CI. Release becomes possible once items 3 and 4 pass and the coverage gaps in item 5 are either tested or explicitly scoped out.
 
 ## 1. Implemented functionality (summary)
 
@@ -153,8 +153,7 @@ See docs/limitations.md. The main ones:
 
 ## 12. Unfinished work and blockers
 
-- Run the CI workflow (Linux + xvfb). Add Windows and macOS runners.
-- Test Godot 4.8 beta 2 (needs authorisation to download).
+- Add export templates to CI so real exports are verified on every platform.
 - Test the .NET workflow (needs the Godot .NET build).
 - Run `@hasmcp/mcp-spec-test` for 2026-07-28 and 2025-11-25 (needs permission to execute it).
 - Expand tests to the IU rows in docs/api-coverage.md.
