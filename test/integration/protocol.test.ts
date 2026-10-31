@@ -2,7 +2,7 @@ import { strict as assert } from 'node:assert';
 import { after, before, describe, it } from 'node:test';
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
-import { SERVER, SKIP_NO_GODOT, startServer, tempProject, type Harness, godotPath } from '../helpers/mcp.ts';
+import { SERVER, SKIP_NO_GODOT, startServer, tempProject, writeFile, type Harness, godotPath } from '../helpers/mcp.ts';
 
 const LEGACY = [
   'launch_editor',
@@ -101,12 +101,16 @@ describe('MCP protocol', { skip: SKIP_NO_GODOT }, () => {
   });
 
   it('cancels a running tool call and terminates the Godot process', async () => {
+    // A scene that never quits on its own, so only cancellation can end the call.
     const p = tempProject();
+    writeFile(p.root, 'loop.gd', 'extends Node\nfunc _process(_d: float) -> void:\n\tpass\n');
+    await modern.ok('godot_scene_create', { projectPath: p.root, scenePath: 'loop.tscn', rootType: 'Node' });
+    await modern.ok('godot_scene_edit', { projectPath: p.root, scenePath: 'loop.tscn', actions: [{ action: 'attach_script', node: '.', script: 'loop.gd' }] });
     const ac = new AbortController();
     setTimeout(() => ac.abort(), 1500);
     await assert.rejects(
       modern.client.callTool(
-        { name: 'godot_run', arguments: { projectPath: p.root, headless: true, mode: 'until_exit', timeoutMs: 120000 } },
+        { name: 'godot_run', arguments: { projectPath: p.root, scene: 'loop.tscn', headless: true, mode: 'until_exit', timeoutMs: 120000 } },
         { signal: ac.signal },
       ),
     );
