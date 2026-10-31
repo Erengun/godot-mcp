@@ -5,7 +5,7 @@
  */
 import { strict as assert } from 'node:assert';
 import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { SKIP_NO_GODOT, startServer, tempProject, type Harness } from '../helpers/mcp.ts';
 import { sha256 } from '../../src/util/hash.ts';
@@ -140,7 +140,7 @@ function snapshot(root: string): Map<string, string> {
       if (f === '.godot') continue;
       const p = join(d, f);
       if (statSync(p).isDirectory()) walk(p);
-      else out.set(relative(root, p), sha256(readFileSync(p)));
+      else out.set(relative(root, p).split(sep).join('/'), sha256(readFileSync(p)));
     }
   };
   walk(root);
