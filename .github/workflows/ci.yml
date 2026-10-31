@@ -1,0 +1,79 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Godot ${{ matrix.godot }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    # Pre-release Godot builds are tested but do not block the PR.
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, godot: 4.7.2-stable, repo: godotengine/godot, experimental: false }
+          - { os: macos-14, godot: 4.7.2-stable, repo: godotengine/godot, experimental: false }
+          - { os: windows-2022, godot: 4.7.2-stable, repo: godotengine/godot, experimental: false }
+          - { os: ubuntu-24.04, godot: 4.8-beta2, repo: godotengine/godot-builds, experimental: true }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Godot ${{ matrix.godot }} (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          base="Godot_v${{ matrix.godot }}_linux.x86_64"
+          curl -fsSL -o godot.zip "https://github.com/${{ matrix.repo }}/releases/download/${{ matrix.godot }}/${base}.zip"
+          unzip -q godot.zip -d "$HOME/godot"
+          echo "GODOT_PATH=$HOME/godot/${base}" >> "$GITHUB_ENV"
+          sudo apt-get update
+          sudo apt-get install -y xvfb libgl1 mesa-vulkan-drivers
+
+      - name: Install Godot ${{ matrix.godot }} (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          curl -fsSL -o godot.zip "https://github.com/${{ matrix.repo }}/releases/download/${{ matrix.godot }}/Godot_v${{ matrix.godot }}_macos.universal.zip"
+          unzip -q godot.zip -d "$HOME/godot"
+          echo "GODOT_PATH=$HOME/godot/Godot.app/Contents/MacOS/Godot" >> "$GITHUB_ENV"
+
+      - name: Install Godot ${{ matrix.godot }} (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          set -euo pipefail
+          base="Godot_v${{ matrix.godot }}_win64.exe"
+          curl -fsSL -o godot.zip "https://github.com/${{ matrix.repo }}/releases/download/${{ matrix.godot }}/${base}.zip"
+          7z x -y -o"$RUNNER_TEMP/godot" godot.zip > /dev/null
+          echo "GODOT_PATH=$(cygpath -w "$RUNNER_TEMP/godot/${base}")" >> "$GITHUB_ENV"
+
+      - run: '"$GODOT_PATH" --headless --version'
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run format:check
+      - run: npm run build
+      - run: npm run check:gdscript
+      - run: npm run test:unit
+
+      - name: Integration tests (Linux, virtual display)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a -s "-screen 0 1280x720x24" npm run test:integration
+
+      - name: Integration tests
+        if: runner.os != 'Linux'
+        run: npm run test:integration

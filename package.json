@@ -1,7 +1,7 @@
 {
   "name": "godot-mcp",
-  "version": "0.1.1",
-  "description": "MCP server for interfacing with Godot game engine. Provides tools for launching the editor, running projects, and capturing debug output.",
+  "version": "2.0.0-dev.0",
+  "description": "MCP server for the Godot 4 engine: inspect, author, validate, run and screenshot real Godot projects (scenes, nodes, resources, scripts, animation, TileMaps, 3D) with an optional live-editor bridge.",
   "keywords": [
     "godot",
     "mcp",
@@ -24,24 +24,38 @@
     "godot-mcp": "./build/index.js"
   },
   "files": [
-    "build"
+    "build",
+    "godot",
+    "README.md",
+    "LICENSE",
+    "docs"
   ],
   "scripts": {
-    "build": "tsc && node scripts/build.js",
+    "build": "tsc -p tsconfig.json && node scripts/build.js",
+    "typecheck": "tsc -p tsconfig.test.json",
+    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\"",
+    "check:gdscript": "node test/helpers/check-gdscript.ts",
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "node --test \"test/unit/**/*.test.ts\"",
+    "test:integration": "npm run build && node --test --test-concurrency=1 \"test/integration/**/*.test.ts\"",
     "inspector": "npx @modelcontextprotocol/inspector build/index.js",
     "prepare": "npm run build",
-    "watch": "tsc --watch"
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "0.6.0",
-    "axios": "^1.7.9",
-    "fs-extra": "^11.2.0"
+    "watch": "tsc --watch",
+    "docs:tools": "npm run build && node scripts/gen-tool-docs.ts",
+    "bench": "npm run build && node scripts/bench.ts"
   },
   "devDependencies": {
-    "@types/node": "^20.11.24",
-    "typescript": "^5.3.3"
+    "@modelcontextprotocol/client": "^2.4.0",
+    "@types/node": "^22.20.5",
+    "prettier": "^3.9.10",
+    "typescript": "^6.0.3"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.4.0",
+    "zod": "^4.6.7"
   }
 }

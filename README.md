@@ -1,246 +1,219 @@
 # Godot MCP
 
-[![Github-sponsors](https://img.shields.io/badge/sponsor-30363D?style=for-the-badge&logo=GitHub-Sponsors&logoColor=#EA4AAA)](https://github.com/sponsors/Coding-Solo)
+Let AI agents inspect, build, run and screenshot real **Godot 4** projects through the [Model Context Protocol](https://modelcontextprotocol.io).
 
-[![](https://badge.mcpx.dev?type=server 'MCP Server')](https://modelcontextprotocol.io/introduction)
-[![Made with Godot](https://img.shields.io/badge/Made%20with-Godot-478CBF?style=flat&logo=godot%20engine&logoColor=white)](https://godotengine.org)
-[![](https://img.shields.io/badge/Node.js-339933?style=flat&logo=nodedotjs&logoColor=white 'Node.js')](https://nodejs.org/en/download/)
-[![](https://img.shields.io/badge/TypeScript-3178C6?style=flat&logo=typescript&logoColor=white 'TypeScript')](https://www.typescriptlang.org/)
+[![CI](https://github.com/Erengun/godot-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Erengun/godot-mcp/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![MCP 2026-07-28](https://img.shields.io/badge/MCP-2026--07--28-6f42c1)](https://modelcontextprotocol.io/specification/2026-07-28)
+[![Godot 4.5+](https://img.shields.io/badge/Godot-4.5%2B-478CBF?logo=godotengine&logoColor=white)](https://godotengine.org)
 
-[![](https://img.shields.io/github/last-commit/Coding-Solo/godot-mcp 'Last Commit')](https://github.com/Coding-Solo/godot-mcp/commits/main)
-[![](https://img.shields.io/github/stars/Coding-Solo/godot-mcp 'Stars')](https://github.com/Coding-Solo/godot-mcp/stargazers)
-[![](https://img.shields.io/github/forks/Coding-Solo/godot-mcp 'Forks')](https://github.com/Coding-Solo/godot-mcp/network/members)
-[![](https://img.shields.io/badge/License-MIT-red.svg 'MIT License')](https://opensource.org/licenses/MIT)
+> **Status: 2.0.0-dev, not released.** CI passes on Ubuntu, macOS and Windows with Godot 4.7.2, and on Ubuntu with Godot 4.8 beta 2. Version 2.0 is **not on npm**: `npx godot-mcp` installs the old 0.x release. Install from source (below). Still unverified: C# (.NET), and real exports on platforms other than macOS. The full list of what's left is in [the final audit](docs/audits/final-implementation-audit.md).
 
+## About
 
-```text
-                           (((((((             (((((((
-                        (((((((((((           (((((((((((
-                        (((((((((((((       (((((((((((((
-                        (((((((((((((((((((((((((((((((((
-                        (((((((((((((((((((((((((((((((((
-         (((((      (((((((((((((((((((((((((((((((((((((((((      (((((
-       (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((
-     ((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((
-    ((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((
-      (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((
-        (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((
-         (((((((((((@@@@@@@(((((((((((((((((((((((((((@@@@@@@(((((((((((
-         (((((((((@@@@,,,,,@@@(((((((((((((((((((((@@@,,,,,@@@@(((((((((
-         ((((((((@@@,,,,,,,,,@@(((((((@@@@@(((((((@@,,,,,,,,,@@@((((((((
-         ((((((((@@@,,,,,,,,,@@(((((((@@@@@(((((((@@,,,,,,,,,@@@((((((((
-         (((((((((@@@,,,,,,,@@((((((((@@@@@((((((((@@,,,,,,,@@@(((((((((
-         ((((((((((((@@@@@@(((((((((((@@@@@(((((((((((@@@@@@((((((((((((
-         (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((
-         (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((
-         @@@@@@@@@@@@@((((((((((((@@@@@@@@@@@@@((((((((((((@@@@@@@@@@@@@
-         ((((((((( @@@(((((((((((@@(((((((((((@@(((((((((((@@@ (((((((((
-         (((((((((( @@((((((((((@@@(((((((((((@@@((((((((((@@ ((((((((((
-          (((((((((((@@@@@@@@@@@@@@(((((((((((@@@@@@@@@@@@@@(((((((((((
-           (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((
-              (((((((((((((((((((((((((((((((((((((((((((((((((((((
-                 (((((((((((((((((((((((((((((((((((((((((((((((
-                        (((((((((((((((((((((((((((((((((
+Godot MCP is a local MCP server. It gives an AI agent such as Claude Code the editor-level tasks you would otherwise do by hand:
 
+- read a scene tree;
+- add a CharacterBody2D with a collision shape;
+- paint a TileMap;
+- wire a signal;
+- check that a script compiles;
+- run the game and read the errors;
+- look at a rendered screenshot.
 
-                          /$$      /$$  /$$$$$$  /$$$$$$$
-                         | $$$    /$$$ /$$__  $$| $$__  $$
-                         | $$$$  /$$$$| $$  \__/| $$  \ $$
-                         | $$ $$/$$ $$| $$      | $$$$$$$/
-                         | $$  $$$| $$| $$      | $$____/
-                         | $$\  $ | $$| $$    $$| $$
-                         | $$ \/  | $$|  $$$$$$/| $$
-                         |__/     |__/ \______/ |__/
-```
+It works through Godot's own APIs, not by guessing at `.tscn` text. It edits scenes the way the editor does, checks scripts with Godot's analyzer and renders with the real GPU renderer. Every edit is verified by reloading the file in Godot afterwards.
 
-A Model Context Protocol (MCP) server for interacting with the Godot game engine.
+## Why this fork?
 
-## Introduction
+This project started as a fork of [Coding-Solo/godot-mcp](https://github.com/Coding-Solo/godot-mcp), which proved the idea. An audit of upstream `1209744` ([details](docs/audits/initial-architecture-audit.md)) found problems that were too deep for small patches, so 2.0 is a rewrite.
 
-Godot MCP enables AI agents to launch the Godot editor, run projects, capture debug output, and control project execution. This direct feedback loop helps agents understand what works and what doesn't in real Godot projects, leading to better code generation and debugging assistance.
+**Security fixes:**
+- **Project code ran on every operation.** The upstream worker instantiated the project's autoload scripts, even for read-only calls like `get_uid`. The 2.0 worker uses a Godot `MainLoop`, which never loads autoloads.
+- **Any path was accepted.** Upstream only checked for `..`. In 2.0, paths are resolved through symlinks and must stay inside the project. Protected files (`.godot/`, `project.godot`, `*.import`, …) cannot be written, and you can optionally limit everything to `GODOT_MCP_ALLOWED_ROOTS`.
+- **Scripts could be injected through properties.** Upstream `add_node` loaded any `"res://…"` string, so `properties: {"script": "res://evil.gd"}` attached arbitrary code. In 2.0, values are converted by the property's declared type, resources must match the property's class, and scripts only attach through a dedicated, validated action.
+- **No limits on processes.** Upstream had no timeouts, output bounds or cancellation. In 2.0 every Godot process has a timeout, bounded output and AbortSignal cancellation, and it is killed by process group.
+- **Unsafe open pull requests.** Several open upstream PRs add new holes:
+  - an unauthenticated control socket bound to all interfaces;
+  - GDScript code injection;
+  - writes to any absolute path.
+
+  2.0's editor bridge listens on `127.0.0.1` only, with a random token per session.
+
+**Correctness and platform updates:**
+- **Protocol.** Moved from SDK 0.6.0 (which negotiated MCP 2024-11-05; upstream issues #135/#136) to the official TypeScript SDK v2. 2.0 speaks MCP **2026-07-28** to new clients and 2025-11-25 / 2025-06-18 to older ones.
+- **Scene integrity.** Edits no longer flatten inherited or instanced scenes, drop UIDs, or report failures as success.
+- **Structured results.** Results are structured data with error codes, not prose.
+- **Tested.** 89 integration tests run against real Godot on Linux, macOS and Windows, plus Godot 4.8 beta 2.
+
+The 14 original tool names still work, so existing setups keep running. See [Upgrading from 0.x](#upgrading-from-0x).
 
 ## Features
 
-- **Launch Godot Editor**: Open the Godot editor for a specific project
-- **Run Godot Projects**: Execute Godot projects in debug mode
-- **Capture Debug Output**: Retrieve console output and error messages
-- **Control Execution**: Start and stop Godot projects programmatically
-- **Get Godot Version**: Retrieve the installed Godot version
-- **List Godot Projects**: Find Godot projects in a specified directory
-- **Project Analysis**: Get detailed information about project structure
-- **Scene Management**:
-  - Create new scenes with specified root node types
-  - Add nodes to existing scenes with customizable properties
-  - Load sprites and textures into Sprite2D nodes
-  - Export 3D scenes as MeshLibrary resources for GridMap
-  - Save scenes with options for creating variants
-- **UID Management** (for Godot 4.4+):
-  - Get UID for specific files
-  - Update UID references by resaving resources
+| Area | What the agent can do |
+|---|---|
+| **Inspect** | Read scene trees without running scripts, node details with every property type and default, resources, scripts (methods, signals, exports), project settings, and the full engine API through ClassDB |
+| **Author scenes** | 23 batched, all-or-nothing actions: add/remove/rename/move/duplicate nodes, typed properties, instance and inherit scenes, editable children, attach scripts, connect signals (argument counts are checked), groups |
+| **2D / 3D** | Animations (tracks, keys, loops, autoplay), TileMapLayer and TileSet with collision, SpriteFrames, MeshLibrary and GridMap, materials, meshes, shapes, lights, environments, navigation |
+| **Validate** | GDScript errors with line numbers from Godot's analyzer (also for unsaved code), whole-project checks for broken references, main scene and autoloads |
+| **Run & debug** | Start the game or a scene, read output with a cursor, get structured script errors (file, line, stack), detect crashes and timeouts |
+| **See** | Real GPU screenshots with automatic checks: blank image, missing meshes or textures, objects inside the camera view |
+| **Assets & builds** | Import status, run the importer, verify assets actually load, UIDs, exports with template checks |
+| **Live editor** | With the optional plugin: edit the scene open in the editor with undo/redo, selection, save/reload, play/stop |
 
-## Requirements
+All 45 tools are listed in [docs/mcp-tools.md](docs/mcp-tools.md), which is generated from the running server.
 
-- [Godot Engine](https://godotengine.org/download) installed on your system
-- Node.js (>=18.0.0) and npm
-- An AI agent that supports MCP
+## Installation
 
-## Quick Start
+### Requirements
 
-### Claude Code
+- [Godot](https://godotengine.org/download) **4.5 or newer** (4.7.2 recommended). For C# you also need the .NET build and the .NET SDK.
+- [Node.js](https://nodejs.org) **20 or newer**.
+- A display only for screenshots and windowed runs. Everything else runs headless.
+
+### From source
 
 ```bash
-claude mcp add godot -- npx @coding-solo/godot-mcp
-```
-
-That's it. Restart Claude Code and your Godot MCP tools are available.
-
-With environment variables:
-
-```bash
-claude mcp add godot -e GODOT_PATH=/path/to/godot -e DEBUG=true -- npx @coding-solo/godot-mcp
-```
-
-<details>
-<summary><strong>Cline</strong></summary>
-
-Add to your Cline MCP settings file (`~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`):
-
-```json
-{
-  "mcpServers": {
-    "godot": {
-      "command": "npx",
-      "args": ["@coding-solo/godot-mcp"],
-      "env": {
-        "DEBUG": "true"
-      },
-      "disabled": false,
-      "autoApprove": [
-        "launch_editor",
-        "run_project",
-        "get_debug_output",
-        "stop_project",
-        "get_godot_version",
-        "list_projects",
-        "get_project_info",
-        "create_scene",
-        "add_node",
-        "load_sprite",
-        "export_mesh_library",
-        "save_scene",
-        "get_uid",
-        "update_project_uids"
-      ]
-    }
-  }
-}
-```
-
-</details>
-
-<details>
-<summary><strong>Cursor</strong></summary>
-
-**Using the Cursor UI:**
-
-1. Go to **Cursor Settings** > **Features** > **MCP**
-2. Click on the **+ Add New MCP Server** button
-3. Fill out the form:
-   - Name: `godot`
-   - Type: `command`
-   - Command: `npx @coding-solo/godot-mcp`
-4. Click "Add"
-5. You may need to press the refresh button in the top right corner of the MCP server card to populate the tool list
-
-**Using Project-Specific Configuration:**
-
-Create a file at `.cursor/mcp.json` in your project directory:
-
-```json
-{
-  "mcpServers": {
-    "godot": {
-      "command": "npx",
-      "args": ["@coding-solo/godot-mcp"],
-      "env": {
-        "DEBUG": "true"
-      }
-    }
-  }
-}
-```
-
-</details>
-
-<details>
-<summary><strong>Other MCP Clients</strong></summary>
-
-For any MCP-compatible client, use this configuration:
-
-```json
-{
-  "mcpServers": {
-    "godot": {
-      "command": "npx",
-      "args": ["@coding-solo/godot-mcp"],
-      "env": {
-        "GODOT_PATH": "/path/to/godot",
-        "DEBUG": "true"
-      }
-    }
-  }
-}
-```
-
-</details>
-
-### Environment Variables
-
-| Variable | Description |
-|----------|-------------|
-| `GODOT_PATH` | Path to the Godot executable (overrides automatic detection) |
-| `DEBUG` | Set to `"true"` to enable detailed server-side debug logging |
-
-<details>
-<summary><strong>Building from Source</strong></summary>
-
-```bash
-git clone https://github.com/Coding-Solo/godot-mcp.git
+git clone https://github.com/Erengun/godot-mcp.git
 cd godot-mcp
-npm install
+git checkout feat/production-grade-mcp
+npm ci
 npm run build
 ```
 
-Then point your MCP client to `build/index.js` instead of using `npx`.
+### Add it to Claude Code
 
-</details>
+```bash
+claude mcp add godot \
+  -e GODOT_PATH=/Applications/Godot.app/Contents/MacOS/Godot \
+  -e GODOT_MCP_ALLOWED_ROOTS=$HOME/GodotProjects \
+  -- node /absolute/path/to/godot-mcp/build/index.js
+```
 
+### Other MCP clients (Claude Desktop, Cursor, Cline, …)
 
-## Architecture
+```json
+{
+  "mcpServers": {
+    "godot": {
+      "command": "node",
+      "args": ["/absolute/path/to/godot-mcp/build/index.js"],
+      "env": {
+        "GODOT_PATH": "/Applications/Godot.app/Contents/MacOS/Godot",
+        "GODOT_MCP_ALLOWED_ROOTS": "/Users/you/GodotProjects"
+      }
+    }
+  }
+}
+```
 
-The Godot MCP server uses a bundled GDScript approach for complex operations:
+On Windows, `GODOT_PATH` points at `Godot_v4.x-stable_win64.exe`. On Linux it points at the extracted `Godot_v4.x-stable_linux.x86_64` binary.
 
-1. **Direct Commands**: Simple operations like launching the editor or getting project info use Godot's built-in CLI commands directly.
-2. **Bundled Operations Script**: Complex operations like creating scenes or adding nodes use a single, comprehensive GDScript file (`godot_operations.gd`) that handles all operations.
+## Usage
 
-The bundled script accepts operation type and parameters as JSON, allowing for flexible and dynamic operation execution without generating temporary files for each operation.
+Ask the agent in plain language:
 
-## Troubleshooting
+> Add a player to `res://level.tscn`: a CharacterBody2D at (64, 60) with a 14×24 collision box and the sprite `res://art/player.png`, then run the scene for 90 frames and tell me if anything errors.
 
-- **Godot Not Found**: Set the `GODOT_PATH` environment variable to your Godot executable path
-- **Connection Issues**: Ensure the server is running and restart your AI assistant
-- **Invalid Project Path**: Ensure the path points to a directory containing a `project.godot` file
-- **Build Issues**: Make sure all dependencies are installed by running `npm install`
+The agent does this with a few tools. Starting with `godot_status` and `godot_scene_inspect`, it then makes one atomic edit:
 
-<details>
-<summary><strong>Cursor-Specific Issues</strong></summary>
+```json
+{
+  "tool": "godot_scene_edit",
+  "arguments": {
+    "projectPath": "/Users/you/GodotProjects/platformer",
+    "scenePath": "res://level.tscn",
+    "actions": [
+      { "action": "add_node", "type": "CharacterBody2D", "name": "Player", "properties": { "position": [64, 60] } },
+      { "action": "add_node", "parent": "Player", "type": "CollisionShape2D", "name": "Collision",
+        "properties": { "shape": { "$new": "RectangleShape2D", "properties": { "size": [14, 24] } } } },
+      { "action": "add_node", "parent": "Player", "type": "Sprite2D", "name": "Sprite",
+        "properties": { "texture": "res://art/player.png" } }
+    ]
+  }
+}
+```
 
-- Ensure the MCP server shows up and is enabled in Cursor settings (Settings > MCP)
-- MCP tools can only be run using the Agent chat profile (Cursor Pro or Business subscription)
-- Use "Yolo Mode" to automatically run MCP tool requests
+If any action fails, nothing is written. Values are plain JSON: Godot converts them using each property's type. That means `[64, 60]` becomes a `Vector2` and `"#ff8800"` a `Color`, `[1, 3]` becomes collision layers 1 and 3, and `{"$new": …}` creates a sub-resource. The full format is in the `godot://docs/value-encoding` resource.
 
-</details>
+A good loop for agents:
+1. Run `godot_status` and `godot_project_info` to learn the capabilities and the project layout.
+2. Run `godot_scene_inspect`, `godot_node_inspect` and `godot_api_class` to get exact paths, property names and types.
+3. Make changes with `godot_scene_edit`, `godot_resource_create` / `godot_resource_edit` and `godot_script_write`.
+4. Check them with `godot_script_validate` and `godot_project_validate`.
+5. Run with `godot_run` (`mode: "until_exit"`, `quitAfterFrames`), then take a `godot_screenshot`.
+
+### Live editor (optional)
+
+1. Ask the agent to run `godot_editor_plugin` with `action: "install"`. This copies `addons/godot_mcp` into the project and enables it.
+2. Open or restart the project in the Godot editor, or use `godot_editor_launch`.
+3. `godot_editor` now edits the open scene through the editor's undo history. Headless edits are refused while that scene has unsaved changes in the editor.
+
+### Configuration
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `GODOT_PATH` | auto-detect | Godot executable |
+| `GODOT_MCP_ALLOWED_ROOTS` | unrestricted | `:`-separated (`;` on Windows) folders that projects must live in. **Recommended.** |
+| `GODOT_MCP_READ_ONLY` | `false` | Refuse every tool that writes files or starts processes |
+| `GODOT_MCP_LEGACY_TOOLS` | `true` | Register the 14 0.x tool names |
+| `GODOT_MCP_OP_TIMEOUT_MS` | `120000` | Timeout for one headless Godot operation |
+| `GODOT_MCP_MAX_LOG_LINES` | `5000` | Game/editor output kept in memory |
+| `GODOT_MCP_MAX_RESPONSE_BYTES` | `262144` | Text payload limit (truncation is stated explicitly) |
+| `GODOT_MCP_MAX_WRITE_BYTES` | `2097152` | Largest script accepted by `godot_script_write` |
+| `DEBUG` | `false` | Verbose logs on stderr |
+
+## Documentation
+
+| Doc | What's in it |
+|---|---|
+| [mcp-tools.md](docs/mcp-tools.md) | Every tool: parameters, annotations, errors (generated) |
+| [architecture.md](docs/architecture.md) | How the server, headless worker and editor plugin fit together |
+| [security.md](docs/security.md) | Trust boundaries, path rules, when project code runs |
+| [api-coverage.md](docs/api-coverage.md) | What is implemented and how well it is tested |
+| [compatibility.md](docs/compatibility.md) | Tested platforms, Godot versions and MCP revisions |
+| [limitations.md](docs/limitations.md) | What it doesn't do, and why |
+| [testing.md](docs/testing.md) | How the tests work and how to run them |
+
+## Upgrading from 0.x
+
+The 0.x tool names and argument spellings (camelCase and snake_case) still work. Behaviour changed only where 0.x was unsafe or wrong:
+
+- Paths are confined to the project, with symlink checks.
+- `add_node` no longer loads arbitrary `res://` strings. Scripts are never loaded this way, and resources only for resource-typed properties.
+- Failures are returned as errors, not as success text.
+- Project autoloads no longer run during edits.
+- `run_project` no longer passes `-d`, which could freeze the game on its first error.
+
+Set `GODOT_MCP_LEGACY_TOOLS=false` to hide the old names.
+
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md). Every new tool or action needs an integration test against real Godot.
+
+```bash
+npm ci
+npm run typecheck && npm run format:check && npm run build
+npm run check:gdscript      # parse all bundled GDScript with Godot
+npm run test:unit           # fast, no Godot needed
+npm run test:integration    # real Godot (set GODOT_PATH); see docs/testing.md
+npm run docs:tools          # regenerate docs/mcp-tools.md
+```
+
+## Roadmap
+
+- [ ] Verify the C# / .NET workflow with the Godot .NET build
+- [ ] Run the third-party MCP conformance suite (`@hasmcp/mcp-spec-test`)
+- [ ] Real exports in CI on every platform
+- [ ] Capture screenshots of an already-running game
+- [ ] Debugger integration (breakpoints, DAP) and input simulation
+- [ ] Publish 2.0 to npm
+
+## Acknowledgments
+
+- [Solomon Elias (Coding-Solo)](https://github.com/Coding-Solo) created the original godot-mcp that this fork builds on.
+- Upstream contributors whose open PRs informed this work, especially #132 (headless authoring), #124 (validation), #115 (screenshots) and #137 (`res://` paths).
+- The [Godot Engine](https://godotengine.org) and [Model Context Protocol](https://modelcontextprotocol.io) teams.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT. See [LICENSE](LICENSE).
