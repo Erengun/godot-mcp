@@ -75,7 +75,6 @@ All 45 tools are listed in [docs/mcp-tools.md](docs/mcp-tools.md), which is gene
 ```bash
 git clone https://github.com/Erengun/godot-mcp.git
 cd godot-mcp
-git checkout feat/production-grade-mcp
 npm ci
 npm run build
 ```
