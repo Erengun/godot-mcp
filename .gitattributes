@@ -1,0 +1,4 @@
+# Keep LF everywhere so Prettier, GDScript and Godot resource files behave
+# identically on Windows checkouts (core.autocrlf would otherwise convert).
+* text=auto eol=lf
+*.png binary
