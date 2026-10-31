@@ -41,22 +41,30 @@ By participating in this project, you agree to maintain a respectful and inclusi
 2. Install dependencies with `npm install`
 3. Build the project with `npm run build`
 4. For development with auto-rebuild, use `npm run watch`
+5. Run `npm test` (requires Godot 4.5+; set `GODOT_PATH`)
 
 ### Project Structure
 
 ```
 godot-mcp/
-├── src/             # Source code
-│   └── index.ts     # Main server implementation
-├── build/           # Compiled JavaScript (generated)
-├── tests/           # Test files (future)
-├── examples/        # Example Godot projects (future)
-├── LICENSE          # MIT License
-├── README.md        # Documentation
-├── CONTRIBUTING.md  # Contribution guidelines
-├── package.json     # Project configuration
-└── tsconfig.json    # TypeScript configuration
+├── src/                    # TypeScript MCP server
+│   ├── index.ts            # entry point (serveStdio)
+│   ├── server.ts           # McpServer factory
+│   ├── context.ts          # process-wide state, locks, write guards
+│   ├── security/           # path canonicalisation and project boundaries
+│   ├── godot/              # locate, process runner, worker, runtime, diagnostics
+│   ├── editor/             # editor-bridge client
+│   ├── tools/              # one module per tool family (+ legacy adapters)
+│   └── resources/          # godot:// MCP resources
+├── godot/
+│   ├── worker/             # headless MainLoop worker + op modules + capture runner
+│   └── addons/godot_mcp/   # editor plugin + shared GDScript lib
+├── test/                   # unit + real-Godot integration tests (node --test)
+├── docs/                   # architecture, security, coverage, testing, audits
+└── scripts/                # build, docs generation, benchmark
 ```
+
+See [docs/architecture.md](docs/architecture.md) and [docs/testing.md](docs/testing.md). Every new tool or action needs an integration test against real Godot, and `npm run docs:tools` must be re-run.
 
 ### Code Style
 
