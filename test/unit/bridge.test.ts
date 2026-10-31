@@ -13,7 +13,7 @@ let port = 0;
 const seen: string[] = [];
 
 before(async () => {
-  dir = realpathSync(mkdtempSync(join(tmpdir(), 'bridge-test-')));
+  dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'bridge-test-')));
   writeFileSync(join(dir, 'project.godot'), 'config_version=5\n');
   // Minimal stand-in implementing the plugin's wire protocol, used only to
   // test client-side handling (auth, routing, errors). The real plugin is

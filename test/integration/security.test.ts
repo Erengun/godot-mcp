@@ -12,7 +12,7 @@ describe('security', { skip: SKIP_NO_GODOT }, () => {
   before(async () => {
     h = await startServer();
     p = tempProject('Sec', '\n[autoload]\n\nMarker="*res://marker.gd"\n');
-    outside = realpathSync(mkdtempSync(join(tmpdir(), 'godot-mcp-outside-')));
+    outside = realpathSync.native(mkdtempSync(join(tmpdir(), 'godot-mcp-outside-')));
     // An autoload that leaves a trace if any project code is executed.
     writeFile(
       p.root,

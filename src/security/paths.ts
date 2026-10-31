@@ -38,8 +38,11 @@ export interface ResolvedResPath {
   abs: string;
 }
 
+/** Windows paths are case-insensitive; compare them case-folded there. */
+const CASE_INSENSITIVE = process.platform === 'win32';
+
 export function isWithin(parent: string, child: string): boolean {
-  const rel = relative(parent, child);
+  const rel = CASE_INSENSITIVE ? relative(parent.toLowerCase(), child.toLowerCase()) : relative(parent, child);
   return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel) && rel.split(sep)[0] !== '..');
 }
 

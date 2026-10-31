@@ -10,7 +10,7 @@ let root: string;
 let outside: string;
 
 before(() => {
-  base = realpathSync(mkdtempSync(join(tmpdir(), 'paths-test-')));
+  base = realpathSync.native(mkdtempSync(join(tmpdir(), 'paths-test-')));
   root = join(base, 'proj');
   outside = join(base, 'outside');
   mkdirSync(join(root, 'scenes'), { recursive: true });

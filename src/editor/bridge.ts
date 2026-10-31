@@ -67,7 +67,11 @@ export function readBridgeInfo(projectRoot: string): BridgeInfo | null {
   ) {
     return null;
   }
-  if (canonical(info.project_root) !== canonical(projectRoot)) {
+  const same =
+    process.platform === 'win32'
+      ? canonical(info.project_root).toLowerCase() === canonical(projectRoot).toLowerCase()
+      : canonical(info.project_root) === canonical(projectRoot);
+  if (!same) {
     throw new GodotMcpError(ErrorCode.Conflict, 'Editor bridge file belongs to a different project path; refusing to connect', {
       context: { bridgeProject: info.project_root, requested: projectRoot },
     });

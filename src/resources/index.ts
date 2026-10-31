@@ -53,7 +53,7 @@ let stubDir: string | null = null;
  */
 export function stubProject(): ProjectRef {
   if (!stubDir || !existsSync(join(stubDir, 'project.godot'))) {
-    stubDir = realpathSync(mkdtempSync(join(tmpdir(), 'godot-mcp-stub-')));
+    stubDir = realpathSync.native(mkdtempSync(join(tmpdir(), 'godot-mcp-stub-')));
     writeFileSync(join(stubDir, 'project.godot'), 'config_version=5\n\n[application]\n\nconfig/name="godot-mcp reflection stub"\n');
   }
   return { root: stubDir, requested: stubDir };

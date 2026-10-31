@@ -67,7 +67,7 @@ export async function startServer(opts: { env?: Record<string, string>; mode?: '
 
 /** Fresh empty Godot project in a private temp directory (realpath'd). */
 export function tempProject(name = 'Test', extra = ''): { root: string; cleanup: () => void } {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'godot-mcp-test-')));
+  const dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'godot-mcp-test-')));
   writeFileSync(join(dir, 'project.godot'), `config_version=5\n\n[application]\n\nconfig/name="${name}"\n${extra}`);
   return { root: dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }

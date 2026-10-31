@@ -4,7 +4,7 @@
  * undoable edits, unsaved-change protection and saving.
  */
 import { strict as assert } from 'node:assert';
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { connect } from 'node:net';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
@@ -56,7 +56,7 @@ describe('live editor bridge', { skip: SKIP_NO_GODOT }, () => {
     const r = await h.ok('godot_editor_launch', { projectPath: p.root, headless: true, waitForBridgeMs: 60000 });
     assert.equal(r.bridgeConnected, true, JSON.stringify(r));
     const st = await h.ok('godot_editor', { projectPath: p.root, action: 'status' });
-    assert.equal(String(st.project_root).replace(/\/$/, ''), p.root);
+    assert.equal(realpathSync.native(String(st.project_root)).toLowerCase(), p.root.toLowerCase());
   });
 
   it('rejects unauthenticated and wrong-token clients', async () => {
