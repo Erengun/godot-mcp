@@ -6,7 +6,6 @@ import { RESOURCE_EXTENSIONS, resolveInProject, SCENE_EXTENSIONS } from '../secu
 import { fileHash } from '../util/hash.ts';
 import { expectedHash, projectPath, properties, resPath } from './schemas.ts';
 import { READ_ONLY, registerTool, WRITES } from './registry.ts';
-import { guardedWrite } from './scene.ts';
 
 export function registerResourceTools(server: McpServer, ctx: AppContext): void {
   registerTool(server, ctx, {
@@ -40,8 +39,7 @@ export function registerResourceTools(server: McpServer, ctx: AppContext): void 
     handler: async (a, { signal }) => {
       const project = ctx.project(a.projectPath);
       const r = resolveInProject(a.path, project, { forWrite: true, extensions: RESOURCE_EXTENSIONS, mustNotExist: !a.overwrite, label: 'path' });
-      const guard = await ctx.guardFileWrite(project, r);
-      const { result, hashAfter } = await guardedWrite(ctx, project, guard, async () => {
+      const { result, hashAfter } = await ctx.guardedWrite(project, r, { operation: 'godot_resource_create' }, async () => {
         const { results } = await ctx.runOps(
           project,
           [{ op: 'resource_create', args: { path: r.res, type: a.type, properties: a.properties ?? {}, overwrite: !!a.overwrite } }],
@@ -63,16 +61,20 @@ export function registerResourceTools(server: McpServer, ctx: AppContext): void 
     handler: async (a, { signal }) => {
       const project = ctx.project(a.projectPath);
       const r = resolveInProject(a.path, project, { mustExist: true, forWrite: true, extensions: RESOURCE_EXTENSIONS, label: 'path' });
-      const guard = await ctx.guardFileWrite(project, r, a.expectedHash);
-      const { result, hashAfter } = await guardedWrite(ctx, project, guard, async () => {
-        const { results } = await ctx.runOps(project, [{ op: 'resource_edit', args: { path: r.res, properties: a.properties } }], {
-          signal,
-          mutates: true,
-          operation: 'godot_resource_edit',
-        });
-        return results[0] as Record<string, unknown>;
-      });
-      return { data: { ...result, sha256Before: guard.hashBefore, sha256: hashAfter } };
+      const { result, hashBefore, hashAfter } = await ctx.guardedWrite(
+        project,
+        r,
+        { operation: 'godot_resource_edit', expectedHash: a.expectedHash },
+        async () => {
+          const { results } = await ctx.runOps(project, [{ op: 'resource_edit', args: { path: r.res, properties: a.properties } }], {
+            signal,
+            mutates: true,
+            operation: 'godot_resource_edit',
+          });
+          return results[0] as Record<string, unknown>;
+        },
+      );
+      return { data: { ...result, sha256Before: hashBefore, sha256: hashAfter } };
     },
   });
 
@@ -153,8 +155,7 @@ export function registerResourceTools(server: McpServer, ctx: AppContext): void 
               };
         for (const k of Object.keys(op.args)) if (op.args[k] === undefined) delete op.args[k];
       }
-      const guard = await ctx.guardFileWrite(project, out);
-      const { result, hashAfter } = await guardedWrite(ctx, project, guard, async () => {
+      const { result, hashAfter } = await ctx.guardedWrite(project, out, { operation: `godot_resource_build:${a.kind}` }, async () => {
         const { results } = await ctx.runOps(project, [op], { signal, mutates: true, operation: `godot_resource_build:${a.kind}` });
         return results[0] as Record<string, unknown>;
       });

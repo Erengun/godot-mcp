@@ -20,6 +20,10 @@ const DENY_BASES: Array[String] = [
 	"EditorImportPlugin", "EditorExportPlugin", "EditorInspectorPlugin",
 	"ResourceFormatLoader", "ResourceFormatSaver", "MainLoop", "Thread",
 	"JavaClassWrapper", "JavaScriptBridge", "WorkerThreadPool", "EditorSettings",
+	# Stand-ins for classes that are not available: they save whatever class
+	# name and properties they are given, so they could write any type
+	# (including the ones above) into a scene or resource file.
+	"MissingNode", "MissingResource",
 ]
 
 
@@ -91,6 +95,15 @@ static func create(cls: String, required_base: String) -> Variant:
 		return obj
 	var entry := find_global_class(cls)
 	var script = ResourceLoader.load(str(entry.get("path", "")), "Script")
+	if script is Script and not script.can_instantiate() and Engine.is_editor_hint() and not script.is_tool():
+		# The editor does not run non-tool scripts: like its own "Add Node",
+		# create the native base and attach the script (a placeholder instance
+		# that keeps the exported values).
+		var base = ClassDB.instantiate(global_class_native_base(cls))
+		if base == null:
+			return U.fail("OPERATION_FAILED", "Project class '%s' could not be instantiated" % cls)
+		base.set_script(script)
+		return base
 	if script == null or not (script is Script) or not script.can_instantiate():
 		return U.fail("OPERATION_FAILED", "Project class '%s' failed to load (see diagnostics)" % cls, {"path": entry.get("path", "")})
 	var inst = script.new()

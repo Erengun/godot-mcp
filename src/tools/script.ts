@@ -3,12 +3,43 @@ import { dirname } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
 import type { AppContext } from '../context.ts';
-import { ErrorCode, GodotMcpError } from '../errors.ts';
-import { resolveInProject, SCRIPT_EXTENSIONS } from '../security/paths.ts';
+import { ErrorCode, GodotMcpError, type EngineDiagnostic } from '../errors.ts';
+import { scanSourcePaths } from '../security/gdscriptSource.ts';
+import { resolveInProject, SCRIPT_EXTENSIONS, type ProjectRef } from '../security/paths.ts';
 import { fileHash, sha256 } from '../util/hash.ts';
 import { classCacheHas, runImport } from './assets.ts';
 import { expectedHash, projectPath, resPath } from './schemas.ts';
 import { READ_ONLY, registerTool, WRITES } from './registry.ts';
+
+/**
+ * preload/extends paths in unsaved source that Godot's analyzer would load
+ * from outside the project (see security/gdscriptSource.ts), as diagnostics.
+ */
+export function unsafeSourcePaths(source: string, project: ProjectRef, label: string): EngineDiagnostic[] {
+  const out: EngineDiagnostic[] = [];
+  for (const f of scanSourcePaths(source)) {
+    let problem = f.problem;
+    if (!problem && f.path) {
+      try {
+        resolveInProject(f.path, project, { label: `${f.keyword} path` });
+      } catch (e) {
+        problem = (e as Error).message;
+      }
+    }
+    if (problem) {
+      out.push({
+        severity: 'error',
+        message: `${f.keyword}: ${problem}. Unsaved source may only ${f.keyword} literal res:// paths inside the project (write the script with godot_script_write to check anything else).`,
+        file: label,
+        line: f.line,
+      });
+    }
+  }
+  return out;
+}
+
+/** Diagnostics that a refreshed global class cache may resolve. */
+const UNKNOWN_TYPE = /Could not find type|Identifier "[A-Z]\w*" not declared/;
 
 /** Write via a temp file in the same directory + rename (atomic on POSIX/NTFS). */
 export function atomicWrite(abs: string, content: string | Buffer): void {
@@ -27,7 +58,7 @@ export function registerScriptTools(server: McpServer, ctx: AppContext): void {
     name: 'godot_script_validate',
     title: 'Validate GDScript',
     description:
-      "Compile GDScript with Godot's own parser/analyzer and return errors with file and line (wrong argument counts, undeclared identifiers, type errors the analyzer can prove, bad syntax). Pass paths, all=true for every script, or source (unsaved text). Headless limitation: identifiers that refer to autoload singletons cannot be resolved and are reported as info notes, not errors. C# files are skipped (use godot_dotnet).",
+      "Compile GDScript with Godot's own parser/analyzer and return errors with file and line (wrong argument counts, undeclared identifiers, type errors the analyzer can prove, bad syntax). Pass paths, all=true for every script, or source (unsaved text). Unsaved source is only analysed, never compiled or run, so none of its code executes; it may only preload/extend literal res:// paths inside the project, and rare compiler-stage errors are not reported for it (godot_script_write checks those). Scripts that use autoload singletons are validated fully (the autoloads themselves never run; a scene autoload is typed as a plain Node). C# files are skipped (use godot_dotnet).",
     input: z.object({
       projectPath,
       paths: z.array(z.string().max(1024)).max(500).optional(),
@@ -44,7 +75,15 @@ export function registerScriptTools(server: McpServer, ctx: AppContext): void {
     handler: async (a, { signal }) => {
       const project = ctx.project(a.projectPath);
       if (a.source !== undefined) {
-        const { results } = await ctx.runOps(project, [{ op: 'script_validate_source', args: { source: a.source, path: a.sourcePath ?? 'unsaved.gd' } }], {
+        const label = a.sourcePath ?? 'unsaved.gd';
+        const refused = unsafeSourcePaths(a.source, project, label);
+        if (refused.length > 0) {
+          return {
+            data: { path: label, valid: false, error: 'Unsafe path in unsaved source; nothing was analysed', diagnostics: refused },
+            summary: `${label}: refused ${refused.length} preload/extends path(s) outside the project.`,
+          };
+        }
+        const { results } = await ctx.runOps(project, [{ op: 'script_validate_source', args: { source: a.source, path: label } }], {
           signal,
         });
         return { data: results[0] as Record<string, unknown> };
@@ -90,7 +129,7 @@ export function registerScriptTools(server: McpServer, ctx: AppContext): void {
     name: 'godot_script_write',
     title: 'Create or replace a script',
     description:
-      'Write a .gd, .gdshader, .gdshaderinc or .cs file inside the project (atomic replace), then validate GDScript with Godot. By default a GDScript that fails to compile is rolled back to the previous content (or deleted if it was new) and the errors are returned; pass keepOnError=true to keep it. Use expectedHash to avoid overwriting concurrent changes. ' +
+      'Write a .gd, .gdshader, .gdshaderinc or .cs file inside the project (atomic replace), validating GDScript with Godot. By default GDScript that Godot cannot parse or analyse is refused before anything is written, and one that then fails to compile is rolled back to the previous content (or deleted if it was new); the errors are returned either way. Pass keepOnError=true to keep a broken version. Use expectedHash to avoid overwriting concurrent changes. ' +
       'When the script declares a new class_name (or refers to a class_name Godot has not registered yet) the global class cache is refreshed with the editor importer (`--import`, which runs editor plugins) so other scripts can use the type; disable with refreshClassCache: "never".',
     input: z.object({
       projectPath,
@@ -117,6 +156,23 @@ export function registerScriptTools(server: McpServer, ctx: AppContext): void {
             context: { expectedHash: a.expectedHash, actualHash: hashBefore },
           });
         }
+        // Analyse the new GDScript before it replaces anything (the analysis
+        // never runs its code); a script Godot cannot parse is not written at
+        // all. Compiler-stage errors are still caught after the write below.
+        if (r.rel.endsWith('.gd') && !a.keepOnError && unsafeSourcePaths(a.content, project, r.res).length === 0) {
+          const pre = (await ctx.runOps(project, [{ op: 'script_validate_source', args: { source: a.content, path: r.res } }], { signal })).results[0] as {
+            valid: boolean;
+            diagnostics?: Array<{ message: string }>;
+          };
+          // An unknown class may be one the class cache refresh below registers.
+          const unknownType = (pre.diagnostics ?? []).some((d) => UNKNOWN_TYPE.test(d.message));
+          if (!pre.valid && !unknownType) {
+            throw new GodotMcpError(ErrorCode.OperationFailed, `${r.res} does not compile; nothing was written`, {
+              context: { validation: pre, written: false },
+              hints: ['Fix the reported lines and write again', 'Pass keepOnError: true to write a broken intermediate version anyway'],
+            });
+          }
+        }
         atomicWrite(r.abs, a.content);
         const data: Record<string, unknown> = {
           path: r.res,
@@ -135,7 +191,7 @@ export function registerScriptTools(server: McpServer, ctx: AppContext): void {
           const entry = v.results[0];
           const mode = a.refreshClassCache ?? 'auto';
           const newClass = !!entry?.class_name && !classCacheHas(project.root, entry.class_name);
-          const unknownType = (entry?.diagnostics ?? []).some((d) => /Could not find type|Identifier "[A-Z]\w*" not declared/.test(d.message));
+          const unknownType = (entry?.diagnostics ?? []).some((d) => UNKNOWN_TYPE.test(d.message));
           if (mode === 'always' || (mode === 'auto' && (newClass || (!v.valid && unknownType)))) {
             const imp = await runImport(ctx, project, 300_000, signal);
             data.classCacheRefreshed = imp.exitCode === 0;

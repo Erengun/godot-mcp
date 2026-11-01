@@ -345,8 +345,8 @@ static func autoload_remove(args: Dictionary) -> Variant:
 const VALIDATE_EXT := ["tscn", "scn", "tres", "res", "gd", "gdshader"]
 
 
-static func collect_files(dir: String, exts: Array, include_addons: bool, out: Array, limit: int) -> void:
-	if out.size() >= limit:
+static func collect_files(dir: String, exts: Array, include_addons: bool, out: Array, limit: int, depth: int = 0) -> void:
+	if out.size() >= limit or depth > U.MAX_DIR_DEPTH:
 		return
 	var da := DirAccess.open(dir)
 	if da == null:
@@ -358,13 +358,13 @@ static func collect_files(dir: String, exts: Array, include_addons: bool, out: A
 		if f.get_extension().to_lower() in exts:
 			out.append(dir.path_join(f))
 	for sub in da.get_directories():
-		if sub.begins_with("."):
-			continue
+		if sub.begins_with(".") or da.is_link(sub):
+			continue  # (a linked directory may lead back up the tree)
 		if not include_addons and dir == "res://" and sub == "addons":
 			continue
 		if FileAccess.file_exists(dir.path_join(sub).path_join(".gdignore")):
 			continue
-		collect_files(dir.path_join(sub), exts, include_addons, out, limit)
+		collect_files(dir.path_join(sub), exts, include_addons, out, limit, depth + 1)
 
 
 static func dependency_problems(path: String) -> Array:
@@ -393,23 +393,10 @@ static func _take_logs() -> Array:
 	return lg.take() if lg != null else []
 
 
-static func classify_diagnostics(diags: Array, autoload_names: Array) -> Array:
-	for d in diags:
-		var m := str(d.get("message", ""))
-		for a in autoload_names:
-			if m.contains("Identifier not found: %s" % a) or m.contains("Identifier \"%s\" not declared" % a):
-				d["severity"] = "info"
-				d["note"] = "Reference to autoload '%s' cannot be resolved headlessly (autoloads are not registered in the worker); this is not a real error. Validate through the editor bridge or a runtime test for full coverage." % a
-	return diags
-
-
 static func project_validate(args: Dictionary) -> Variant:
 	var limit := clampi(int(args.get("max_files", 3000)), 1, 20000)
 	var files := []
 	collect_files("res://", VALIDATE_EXT, bool(args.get("include_addons", false)), files, limit)
-	var autoload_names := []
-	for a in autoloads():
-		autoload_names.append(a["name"])
 	_take_logs()
 	var problems := []
 	var checked := 0
@@ -420,11 +407,8 @@ static func project_validate(args: Dictionary) -> Variant:
 		if not missing.is_empty():
 			entry["missing_dependencies"] = missing
 		var res = ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_IGNORE)
-		var diags := classify_diagnostics(_take_logs(), autoload_names)
-		var real := diags.filter(func(d): return d.get("severity") != "info" and d.get("severity") != "warning")
-		if res == null and real.is_empty() and not autoload_names.is_empty() and diags.size() > 0:
-			entry["note"] = "Loading failed only because of autoload references; see diagnostics"
-		elif res == null:
+		var diags := _take_logs()
+		if res == null:
 			entry["load_failed"] = true
 		elif res is PackedScene and not (res as PackedScene).can_instantiate():
 			entry["load_failed"] = true

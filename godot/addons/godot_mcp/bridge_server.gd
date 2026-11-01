@@ -46,13 +46,25 @@ func start() -> int:
 		"godot_version": Engine.get_version_info().get("string", ""),
 		"started_at": Time.get_datetime_string_from_system(true),
 	}
-	DirAccess.make_dir_recursive_absolute(_info_path.get_base_dir())
+	# Owner-only from the start: the directory first, then the (still empty)
+	# file, and only then the token, so no other local user can ever read it.
+	var dir := _info_path.get_base_dir()
+	DirAccess.make_dir_recursive_absolute(dir)
+	FileAccess.set_unix_permissions(dir, FileAccess.UNIX_READ_OWNER | FileAccess.UNIX_WRITE_OWNER | FileAccess.UNIX_EXECUTE_OWNER)
 	var f := FileAccess.open(_info_path, FileAccess.WRITE)
+	if f == null:
+		_server.stop()
+		return FileAccess.get_open_error()
+	f.close()
+	FileAccess.set_unix_permissions(_info_path, FileAccess.UNIX_READ_OWNER | FileAccess.UNIX_WRITE_OWNER)
+	f = FileAccess.open(_info_path, FileAccess.WRITE)
 	if f == null:
 		_server.stop()
 		return FileAccess.get_open_error()
 	f.store_string(JSON.stringify(info))
 	f.close()
+	# Godot 4.5 writes through a temporary file that replaces this one (with
+	# default permissions; the owner-only directory still protects it).
 	FileAccess.set_unix_permissions(_info_path, FileAccess.UNIX_READ_OWNER | FileAccess.UNIX_WRITE_OWNER)
 	print("Godot MCP bridge listening on 127.0.0.1:%d" % _server.get_local_port())
 	return OK
@@ -142,7 +154,11 @@ func _handle_line(c: Client, line: String) -> bool:
 	if typeof(params) != TYPE_DICTIONARY:
 		params = {}
 	var result = _ops.dispatch(method, params)
-	if typeof(result) == TYPE_DICTIONARY and (result as Dictionary).has("__error"):
+	if result == null:
+		# Every method returns a result or an error; null means a runtime error
+		# aborted it (see the editor's Output panel), so never report success.
+		_send(c, {"id": id, "ok": false, "error": {"code": "INTERNAL", "message": "Editor operation '%s' failed with an internal error (malformed parameters? see the editor output)" % method}})
+	elif typeof(result) == TYPE_DICTIONARY and (result as Dictionary).has("__error"):
 		_send(c, {"id": id, "ok": false, "error": result["__error"]})
 	else:
 		_send(c, {"id": id, "ok": true, "result": result})

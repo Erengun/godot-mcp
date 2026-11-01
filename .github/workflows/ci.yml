@@ -23,6 +23,9 @@ jobs:
           - { os: ubuntu-24.04, godot: 4.7.2-stable, repo: godotengine/godot, experimental: false }
           - { os: macos-14, godot: 4.7.2-stable, repo: godotengine/godot, experimental: false }
           - { os: windows-2022, godot: 4.7.2-stable, repo: godotengine/godot, experimental: false }
+          # The oldest supported versions (README: Godot 4.5 or newer).
+          - { os: ubuntu-24.04, godot: 4.5.2-stable, repo: godotengine/godot, experimental: false }
+          - { os: ubuntu-24.04, godot: 4.6.3-stable, repo: godotengine/godot, experimental: false }
           - { os: ubuntu-24.04, godot: 4.8-beta2, repo: godotengine/godot-builds, experimental: true }
     defaults:
       run:

@@ -18,7 +18,7 @@ godot-mcp 2.0 has three components. Each one owns a single concern, and each one
  └──────┬───────────────────────────────┬─────────────────────┬───────┘
         │ temp request/response JSON     │ argv only           │ TCP 127.0.0.1 + token
  ┌──────▼──────────────────────┐ ┌──────▼──────────────┐ ┌────▼─────────────────────────┐
- │ Headless worker (MainLoop)  │ │ Game / editor /     │ │ EditorPlugin (addons/godot_mcp)│
+ │ Headless worker (SceneTree) │ │ Game / editor /     │ │ EditorPlugin (addons/godot_mcp)│
  │ godot/worker/mcp_worker.gd  │ │ import / export /   │ │ bridge_server.gd + editor_ops │
  │ ops/*.gd per domain         │ │ capture processes   │ │ EditorInterface, UndoRedo     │
  └──────┬──────────────────────┘ └─────────────────────┘ └────┬─────────────────────────┘
@@ -36,7 +36,7 @@ godot-mcp 2.0 has three components. Each one owns a single concern, and each one
 ## 2. Headless worker
 
 - `godot --headless --no-header --path <project> --script godot/worker/mcp_worker.gd -- <req.json> <res.json>`
-- **`extends MainLoop`, not `SceneTree`.** With a MainLoop, Godot does not instantiate autoloads, so read operations run no project code. This was verified against 4.7.2; upstream ran autoload `_init`/`_ready` on every operation.
+- **Autoloads are registered but never run.** The worker is a `SceneTree`, because only then does Godot register autoload names before project scripts load, and scripts that use an autoload compile only once its name is registered. In `_init()`, before Godot instantiates the autoloads, the worker points every `autoload/*` setting at `godot/worker/autoload_placeholder.gd`, an empty `Node`. `_initialize()` restores the real values (in memory only; `project.godot` is never written) and removes the placeholder's script before any operation runs, so the analyzer types a script autoload from its real script and a scene autoload as a plain `Node`. The tree never runs a frame: after writing the response the worker ends its own process at once (the response file is the only result channel, so the exit status does not matter), and nodes, signals or deferred calls that project code set up during an operation never run. (Should the worker's own code fail before that point, `_process` ends the run after the first frame.) Upstream ran autoload `_init`/`_ready` on every operation.
 - **Batch protocol.** The request carries `ops: [{op, args}]`. The worker stops at the first failure. The response file is the only result channel: a missing or unreadable response is always a failure, whatever the exit code. JSON never goes on argv.
 - **Structured engine diagnostics.** A `Logger` subclass registered with `OS.add_logger` (Godot 4.5+) collects them. The worker doesn't need to scrape stderr.
 - **Op modules** (`godot/worker/ops`):

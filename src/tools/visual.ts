@@ -131,8 +131,10 @@ export function registerVisualTools(server: McpServer, ctx: AppContext): void {
         signal,
       });
       if (save) {
-        mkdirSync(dirname(save.abs), { recursive: true });
-        writeFileSync(save.abs, shot.png);
+        await ctx.locks.run(project.root, async () => {
+          mkdirSync(dirname(save.abs), { recursive: true });
+          writeFileSync(save.abs, shot.png);
+        });
       }
       const warnings: string[] = [];
       if (shot.stats.looks_blank) warnings.push('The image is a single flat colour: nothing visible was rendered.');

@@ -2,7 +2,8 @@
  * Headless Godot worker invocation.
  *
  * One invocation = one Godot process running `godot/worker/mcp_worker.gd`
- * (a `MainLoop`, so project autoloads are never instantiated) against one
+ * (a `SceneTree` whose autoloads are swapped for an inert placeholder, so the
+ * project's autoloads never run) against one
  * project, executing a *batch* of operations.
  *
  * Transport: request and response are JSON files in a private (0700)

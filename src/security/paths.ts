@@ -173,10 +173,16 @@ export interface ResolveOptions {
 const PROTECTED_DIRS = ['.godot', '.git', '.import'];
 
 export function isProtectedPath(rel: string): boolean {
-  const first = rel.split('/')[0] ?? '';
+  // Case-insensitive file systems (macOS, Windows) and Windows' dropping of
+  // trailing dots and spaces give the same file several names.
+  const norm = rel
+    .split('/')
+    .map((s) => s.toLowerCase().replace(/[. ]+$/, ''))
+    .join('/');
+  const first = norm.split('/')[0] ?? '';
   if (PROTECTED_DIRS.includes(first)) return true;
-  if (rel === 'project.godot' || rel === 'export_presets.cfg' || rel === 'override.cfg') return true;
-  return rel.endsWith('.import') || rel.endsWith('.uid');
+  if (norm === 'project.godot' || norm === 'export_presets.cfg' || norm === 'override.cfg') return true;
+  return norm.endsWith('.import') || norm.endsWith('.uid');
 }
 
 /** Normalise + symlink-aware boundary check + optional existence/extension rules. */

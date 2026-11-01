@@ -1,7 +1,6 @@
 import type { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
-import type { AppContext, FileGuard } from '../context.ts';
-import { toGodotMcpError } from '../errors.ts';
+import type { AppContext } from '../context.ts';
 import type { ProjectRef } from '../security/paths.ts';
 import { resolveInProject, SCENE_EXTENSIONS, SCRIPT_EXTENSIONS } from '../security/paths.ts';
 import { fileHash } from '../util/hash.ts';
@@ -40,7 +39,7 @@ const ACTION_DOC = `Each action is an object with "action" plus fields:
 - rename_node {node, new_name}
 - move_node {node, new_parent, index?, keep_global_transform?}
 - reorder_node {node, index}
-- duplicate_node {node, new_name?, parent?}
+- duplicate_node {node, new_name?, parent?}  (only nodes this scene file defines itself — not nodes of an inherited scene or inside an instance; change or remove the original in a separate call)
 - instantiate_scene {parent, scene, name?, properties?, index?, if_exists?}  (keeps the sub-scene as an instance, never flattened)
 - set_properties {node, properties}
 - attach_script {node, script, properties?} / detach_script {node}
@@ -71,27 +70,6 @@ function checkActionPaths(project: ProjectRef, actions: Array<Record<string, unk
     if (a.action === 'attach_script' && a.script !== undefined) {
       resolveInProject(a.script, project, { mustExist: true, extensions: SCRIPT_EXTENSIONS, label: 'attach_script.script' });
     }
-  }
-}
-
-/** Run a worker batch that rewrites `guard.path`, rolling back on failure. */
-export async function guardedWrite<T>(
-  ctx: AppContext,
-  project: ProjectRef,
-  guard: FileGuard,
-  fn: () => Promise<T>,
-): Promise<{ result: T; hashAfter: string | null; editorNote?: string }> {
-  try {
-    const result = await fn();
-    const editorNote = await ctx.notifyEditorOfWrite(project, guard);
-    return { result, hashAfter: fileHash(guard.path.abs), editorNote };
-  } catch (e) {
-    const err = toGodotMcpError(e);
-    if (fileHash(guard.path.abs) !== guard.hashBefore) {
-      ctx.rollback(guard);
-      err.details.context = { ...(err.details.context ?? {}), rolledBack: true };
-    }
-    throw err;
   }
 }
 
@@ -185,8 +163,7 @@ export function registerSceneTools(server: McpServer, ctx: AppContext): void {
       const project = ctx.project(a.projectPath);
       const scene = resolveInProject(a.scenePath, project, { forWrite: true, extensions: ['.tscn'], mustNotExist: !a.overwrite, label: 'scenePath' });
       if (a.inherits) resolveInProject(a.inherits, project, { mustExist: true, extensions: SCENE_EXTENSIONS, label: 'inherits' });
-      const guard = await ctx.guardFileWrite(project, scene);
-      const { result, hashAfter, editorNote } = await guardedWrite(ctx, project, guard, async () => {
+      const { result, hashAfter, editorNote } = await ctx.guardedWrite(project, scene, { operation: 'godot_scene_create' }, async () => {
         const { results } = await ctx.runOps(
           project,
           [
@@ -222,31 +199,40 @@ export function registerSceneTools(server: McpServer, ctx: AppContext): void {
       actions: z.array(actionSchema).min(1).max(500),
       dryRun: z.boolean().optional().describe('Validate and apply in memory but do not save'),
       saveAs: z.string().max(1024).optional().describe('Save the result to a different file instead of overwriting'),
+      overwrite: z.boolean().optional().describe('With saveAs: replace the target if it already exists'),
       expectedHash,
     }),
     annotations: WRITES,
     handler: async (a, { signal }) => {
       const project = ctx.project(a.projectPath);
       const scene = resolveInProject(a.scenePath, project, { mustExist: true, extensions: SCENE_EXTENSIONS, label: 'scenePath' });
+      // saveAs naming the scene itself is a plain save, which needs no overwrite.
+      const sameFile = !!a.saveAs && resolveInProject(a.saveAs, project, { extensions: ['.tscn', '.scn'], label: 'saveAs' }).res === scene.res;
       const target = a.saveAs
-        ? resolveInProject(a.saveAs, project, { forWrite: true, extensions: ['.tscn', '.scn'], label: 'saveAs' })
+        ? resolveInProject(a.saveAs, project, { forWrite: true, extensions: ['.tscn', '.scn'], mustNotExist: !a.overwrite && !sameFile, label: 'saveAs' })
         : resolveInProject(a.scenePath, project, { forWrite: true, extensions: SCENE_EXTENSIONS, label: 'scenePath' });
       checkActionPaths(project, a.actions as Array<Record<string, unknown>>);
-      const args = { scene: scene.res, actions: a.actions, dry_run: !!a.dryRun, save_as: a.saveAs ? target.res : '' };
+      const args = { scene: scene.res, actions: a.actions, dry_run: !!a.dryRun, save_as: a.saveAs ? target.res : '', overwrite: !!a.overwrite };
       if (a.dryRun) {
         const { results } = await ctx.runOps(project, [{ op: 'scene_edit', args }], { signal, operation: 'godot_scene_edit(dry run)' });
         return { data: results[0] as Record<string, unknown>, summary: 'Dry run: all actions applied in memory; nothing saved.' };
       }
-      if (a.expectedHash !== undefined && a.expectedHash !== fileHash(scene.abs)) {
-        await ctx.guardFileWrite(project, scene, a.expectedHash); // throws Conflict
-      }
-      const guard = await ctx.guardFileWrite(project, target, a.saveAs ? undefined : a.expectedHash);
-      const { result, hashAfter, editorNote } = await guardedWrite(ctx, project, guard, async () => {
-        const { results } = await ctx.runOps(project, [{ op: 'scene_edit', args }], { signal, mutates: true, operation: 'godot_scene_edit' });
-        return results[0] as Record<string, unknown>;
-      });
+      // expectedHash always refers to the scene that was read (scenePath), also with saveAs.
+      const { result, hashBefore, hashAfter, editorNote } = await ctx.guardedWrite(
+        project,
+        target,
+        {
+          operation: 'godot_scene_edit',
+          expectedHash: a.saveAs ? undefined : a.expectedHash,
+          precheck: a.saveAs ? () => ctx.assertHash(scene, a.expectedHash) : undefined,
+        },
+        async () => {
+          const { results } = await ctx.runOps(project, [{ op: 'scene_edit', args }], { signal, mutates: true, operation: 'godot_scene_edit' });
+          return results[0] as Record<string, unknown>;
+        },
+      );
       return {
-        data: { ...result, sha256Before: guard.hashBefore, sha256: hashAfter, editor: editorNote },
+        data: { ...result, sha256Before: hashBefore, sha256: hashAfter, editor: editorNote },
         summary: `Applied ${a.actions.length} action(s) to ${target.res}`,
       };
     },

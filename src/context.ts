@@ -4,12 +4,13 @@
  * bridge connections. Created once in index.ts and handed to the McpServer
  * factory (a stdio connection may instantiate the factory per protocol era).
  */
+import { randomBytes } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ServerConfig } from './config.ts';
 import { EditorBridgeManager } from './editor/bridge.ts';
 import { removeStubProject } from './resources/index.ts';
-import { ErrorCode, GodotMcpError } from './errors.ts';
+import { ErrorCode, GodotMcpError, toGodotMcpError } from './errors.ts';
 import { locateGodot, type GodotInstall } from './godot/locate.ts';
 import { RuntimeManager } from './godot/runtime.ts';
 import { runWorker, workerFailure, type WorkerOp, type WorkerResponse } from './godot/worker.ts';
@@ -33,6 +34,22 @@ export interface FileGuard {
   hashBefore: string | null;
   backup: Buffer | null;
   editorOpen: boolean;
+}
+
+export interface GuardedWriteOptions {
+  /** Tool/operation name for read-only refusals and error messages. */
+  operation: string;
+  /** sha256 the target must still have (optimistic concurrency). */
+  expectedHash?: string;
+  /** Further checks that must hold under the lock, before anything is written. */
+  precheck?: () => void | Promise<void>;
+}
+
+export interface GuardedWriteResult<T> {
+  result: T;
+  hashBefore: string | null;
+  hashAfter: string | null;
+  editorNote?: string;
 }
 
 export class AppContext {
@@ -79,18 +96,54 @@ export class AppContext {
   }
 
   /**
-   * Pre-write checks for a file the worker is about to rewrite:
+   * Rewrite one file through `write` (normally a worker batch) as a single
+   * unit under the project lock: the pre-write checks, the backup, the write,
+   * the editor reload and — if `write` fails — the rollback all happen while
+   * no other mutation of the project can run. Taking the backup outside the
+   * lock would let a failing call restore a stale copy over a concurrent
+   * call's successful write.
+   */
+  async guardedWrite<T>(project: ProjectRef, path: ResolvedResPath, opts: GuardedWriteOptions, write: () => Promise<T>): Promise<GuardedWriteResult<T>> {
+    this.assertWritable(opts.operation);
+    return this.locks.run(project.root, async () => {
+      await opts.precheck?.();
+      const guard = await this.guardFileWrite(project, path, opts.expectedHash);
+      try {
+        const result = await write();
+        const editorNote = await this.notifyEditorOfWrite(project, guard);
+        return { result, hashBefore: guard.hashBefore, hashAfter: fileHash(path.abs), editorNote };
+      } catch (e) {
+        const err = toGodotMcpError(e, opts.operation);
+        if (fileHash(path.abs) !== guard.hashBefore) {
+          this.rollback(guard);
+          err.details.context = { ...(err.details.context ?? {}), rolledBack: true };
+        }
+        throw err;
+      }
+    });
+  }
+
+  /** Refuse when `path` no longer has the sha256 the caller last saw. */
+  assertHash(path: ResolvedResPath, expectedHash: string | undefined): void {
+    if (expectedHash === undefined) return;
+    const actualHash = fileHash(path.abs);
+    if (expectedHash !== actualHash) {
+      throw new GodotMcpError(ErrorCode.Conflict, `${path.res} changed since it was read (hash mismatch); re-inspect it and retry`, {
+        context: { expectedHash, actualHash },
+      });
+    }
+  }
+
+  /**
+   * Pre-write checks for a file the worker is about to rewrite (call under
+   * the project lock; guardedWrite does):
    *  - optimistic concurrency (expectedHash),
    *  - refuse when the live editor holds unsaved changes to the same scene,
    *  - keep an in-memory backup so a failed post-write validation can be rolled back.
    */
   async guardFileWrite(project: ProjectRef, path: ResolvedResPath, expectedHash?: string): Promise<FileGuard> {
+    this.assertHash(path, expectedHash);
     const hashBefore = fileHash(path.abs);
-    if (expectedHash !== undefined && expectedHash !== hashBefore) {
-      throw new GodotMcpError(ErrorCode.Conflict, `${path.res} changed since it was read (hash mismatch); re-inspect it and retry`, {
-        context: { expectedHash, actualHash: hashBefore },
-      });
-    }
     let editorOpen = false;
     try {
       const bridge = await this.editor.get(project.root);
@@ -136,12 +189,13 @@ export class AppContext {
     }
   }
 
-  /** Copy project.godot aside before a settings write (kept in .godot/godot_mcp/backups). */
+  /** Copy project.godot aside before a settings write (kept in .godot/godot_mcp/backups); call under the project lock. */
   backupProjectFile(project: ProjectRef): string {
     const src = join(project.root, 'project.godot');
     const dir = join(project.root, '.godot', 'godot_mcp', 'backups');
     mkdirSync(dir, { recursive: true });
-    const dest = join(dir, `project.godot.${new Date().toISOString().replace(/[:.]/g, '-')}.bak`);
+    // Timestamp first so the names sort chronologically; the random suffix keeps two backups in one millisecond apart.
+    const dest = join(dir, `project.godot.${new Date().toISOString().replace(/[:.]/g, '-')}-${randomBytes(3).toString('hex')}.bak`);
     copyFileSync(src, dest);
     // Keep only the most recent backups.
     const old = readdirSync(dir)

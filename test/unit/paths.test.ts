@@ -94,6 +94,19 @@ describe('normalizeResPath / resolveInProject', () => {
     assert.ok(isProtectedPath('icon.png.import'));
     assert.ok(isProtectedPath('a.gd.uid'));
     assert.ok(!isProtectedPath('scenes/a.tscn'));
+    // Other names of the same files on case-insensitive file systems and Windows.
+    for (const alias of [
+      'Project.godot',
+      'PROJECT.GODOT',
+      '.GIT/config',
+      '.Godot/x.cfg',
+      'project.godot.',
+      'project.godot ',
+      'Export_Presets.cfg',
+      'icon.png.IMPORT',
+      'a.gd.UID',
+    ])
+      assert.ok(isProtectedPath(alias), alias);
   });
 });
 

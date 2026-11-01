@@ -3,8 +3,10 @@ extends RefCounted
 ##
 ## Validation compiles each script with ResourceLoader (CACHE_MODE_IGNORE, so
 ## the shared cache is not polluted with broken scripts) and collects the
-## errors Godot reports through the worker Logger. Note: loading a script runs
-## its `static var` initialisers and `_static_init()`; nothing else executes.
+## errors Godot reports through the worker Logger. Note: loading a project
+## script runs its `static var` initialisers and `_static_init()`; nothing
+## else executes. Unsaved source from the caller is analysed but never
+## compiled, so none of it runs (see script_validate_source).
 
 const U = preload("../../addons/godot_mcp/lib/mcp_util.gd")
 const C = preload("../../addons/godot_mcp/lib/variant_codec.gd")
@@ -19,21 +21,14 @@ static func ops() -> Dictionary:
 	}
 
 
-static func _autoload_names() -> Array:
-	var names := []
-	for a in PO.autoloads():
-		names.append(a["name"])
-	return names
-
-
-static func _validate_one(path: String, autoloads: Array) -> Dictionary:
+static func _validate_one(path: String) -> Dictionary:
 	PO._take_logs()
 	var entry := {"path": path}
 	if path.get_extension() == "cs":
 		entry["skipped"] = "C# scripts are compiled by the .NET toolchain; use godot_dotnet_build"
 		return entry
 	var s = ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_IGNORE)
-	var diags := PO.classify_diagnostics(PO._take_logs(), autoloads)
+	var diags := PO._take_logs()
 	var own := []
 	var deps := []
 	for d in diags:
@@ -47,15 +42,12 @@ static func _validate_one(path: String, autoloads: Array) -> Dictionary:
 			d["severity"] = "info" if not own.is_empty() else d.get("severity")
 			own.append(d)
 	var errors := own.filter(func(d): return d.get("severity") in ["error", "script_error"])
-	var autoload_only := errors.is_empty() and own.any(func(d): return d.has("note"))
-	entry["valid"] = s != null and errors.is_empty() or autoload_only
+	entry["valid"] = s != null and errors.is_empty()
 	entry["loaded"] = s != null
 	if not own.is_empty():
 		entry["diagnostics"] = own
 	if not deps.is_empty():
 		entry["dependency_diagnostics"] = deps
-	if autoload_only:
-		entry["partial"] = "Compilation stopped at an autoload reference; later errors (if any) were not checked headlessly."
 	if s is Script:
 		entry["class_name"] = str((s as Script).get_global_name())
 		entry["extends"] = str((s as Script).get_instance_base_type())
@@ -76,11 +68,10 @@ static func script_validate(args: Dictionary) -> Variant:
 			paths.append(rp)
 	if paths.is_empty():
 		return U.fail("INVALID_ARGUMENT", "Pass paths or all: true")
-	var autoloads := _autoload_names()
 	var results := []
 	var invalid := 0
 	for p in paths:
-		var e := _validate_one(p, autoloads)
+		var e := _validate_one(p)
 		if not e.get("valid", true) and not e.has("skipped"):
 			invalid += 1
 		results.append(e)
@@ -88,21 +79,105 @@ static func script_validate(args: Dictionary) -> Variant:
 
 
 ## Validate unsaved source text (e.g. before writing it to disk).
+##
+## The source comes from the tool caller, so it must never run. GDScript runs
+## `static var` initialisers and `_static_init()` as soon as a script compiles
+## (GDScript::reload, whenever scripting is enabled, which it is in the
+## worker). To get the analyzer's diagnostics without compiling, a sentinel
+## constant with a guaranteed type error is appended on its own line: the
+## analyzer still reports every error in the caller's code, but analysis can
+## never succeed, so the compiler and the static initialisers never run.
+## Anything that swallows the sentinel line (an open bracket, a trailing
+## backslash, a dangling annotation) is itself a parse error, which also stops
+## before compilation. Only errors on the sentinel line are filtered out.
+## (The TypeScript side has already refused preload/extends paths outside the
+## project, the only caller-chosen files the analyzer loads.)
 static func script_validate_source(args: Dictionary) -> Variant:
 	var source := str(args.get("source", ""))
 	if source.length() > 2 * 1024 * 1024:
 		return U.fail("INVALID_ARGUMENT", "Source too large")
 	var label := str(args.get("path", "unsaved.gd"))
+	# Unpredictable, so caller source can never declare or reference it.
+	var sentinel_name := "__godot_mcp_no_compile_%s__" % Crypto.new().generate_random_bytes(12).hex_encode()
+	# The sentinel lands on the line after the caller's last line.
+	var sentinel_line := source.count("\n") + 2
+	var last_code_line := _last_code_line(source)
 	PO._take_logs()
 	var g := GDScript.new()
-	g.source_code = source
+	g.source_code = source + "\nconst %s: int = \"\"\n" % sentinel_name
 	var err := g.reload()
-	var diags := PO.classify_diagnostics(PO._take_logs(), _autoload_names())
-	for d in diags:
-		if str(d.get("file", "")).begins_with("gdscript://"):
+	if err == OK:
+		# Unreachable by construction (and static initialisers would already
+		# have run by now); fail closed rather than report success.
+		return U.fail("INTERNAL", "Source validation compiled unexpectedly; refusing to report a result")
+	var logged := PO._take_logs()
+	# The sentinel's type error names it; seeing it means the caller's code
+	# parsed completely and analysis reached the end of the source.
+	var sentinel_seen := logged.any(func(d): return str(d.get("message", "")).contains(sentinel_name))
+	var diags := []
+	for d in logged:
+		var own := str(d.get("file", "")).begins_with("gdscript://")
+		if own and int(d.get("line", 0)) >= sentinel_line:
+			# Once analysis reached the sentinel, every error on its line is the
+			# sentinel's own (Godot reports its type error twice). Otherwise the
+			# caller's last construct ran into it: report that on the caller's line.
+			if sentinel_seen:
+				continue
+			d["line"] = last_code_line
+		if own:
 			d["file"] = label
+		diags.append(d)
+	# Without the sentinel seen, a parse error has already been reported.
+	var dangling := _dangling_warning_ignore(source) if sentinel_seen else 0
+	if dangling > 0:
+		diags.append({"severity": "error", "message": "Annotation \"@warning_ignore\" does not precede a valid target (nothing follows it)", "file": label, "line": dangling})
 	var errors := diags.filter(func(d): return d.get("severity") in ["error", "script_error"] and str(d.get("file", "")) == label)
-	return {"path": label, "valid": err == OK and errors.is_empty(), "error": error_string(err) if err != OK else "", "diagnostics": diags}
+	var valid := sentinel_seen and errors.is_empty()
+	var result := {"path": label, "valid": valid, "error": "" if valid else error_string(err), "diagnostics": diags}
+	if not valid and errors.is_empty():
+		result["error"] = "The source could not be analysed (no diagnostics were reported); check it with godot_script_write"
+	return result
+
+
+## 1-based number of the last line that holds code (not blank, not a comment).
+static func _last_code_line(source: String) -> int:
+	var lines := source.split("\n")
+	for i in range(lines.size() - 1, -1, -1):
+		var t := lines[i].strip_edges()
+		if not t.is_empty() and not t.begins_with("#"):
+			return i + 1
+	return 1
+
+
+## Line of a `@warning_ignore(...)` that ends the source with nothing after it
+## (0 if none). Every other annotation without a target is either standalone
+## (@export_group, @warning_ignore_restore, ...) or refused by Godot when it
+## lands on the sentinel constant; @warning_ignore alone would silently attach
+## to the sentinel and hide the "does not precede a valid target" error.
+## Handles arguments split over several lines and `stmt; @warning_ignore(...)`.
+static func _dangling_warning_ignore(source: String) -> int:
+	var lines := source.split("\n")
+	var end := lines.size()
+	while end > 0:
+		var t := lines[end - 1].strip_edges()
+		if not t.is_empty() and not t.begins_with("#"):
+			break
+		end -= 1
+	if end == 0:
+		return 0
+	var tail := "\n".join(lines.slice(0, end))
+	# Must start a line or follow `;` (not inside a trailing comment); `\`
+	# continuations may sit between the name and its arguments.
+	var m := RegEx.create_from_string("(?:^|\\n|;)[ \\t]*(@warning_ignore)(?:\\s|\\\\\\r?\\n)*(\\([^()]*\\))?[ \\t]*(#[^\\n]*)?\\s*$").search(tail)
+	if m == null:
+		return 0
+	var line := tail.substr(0, m.get_start(1)).count("\n") + 1
+	# A script that is nothing but leading annotations is valid (class-level).
+	for i in line - 1:
+		var t := lines[i].strip_edges()
+		if not t.is_empty() and not t.begins_with("#") and not t.begins_with("@"):
+			return line
+	return 0
 
 
 static func _arg_desc(a: Dictionary) -> Dictionary:

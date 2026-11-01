@@ -1,10 +1,10 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { dirname, join, relative, sep } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
 import type { AppContext } from '../context.ts';
-import { ErrorCode, GodotMcpError } from '../errors.ts';
+import { ErrorCode, GodotMcpError, toGodotMcpError } from '../errors.ts';
 import { parseDiagnostics, summarizeDiagnostics } from '../godot/diagnostics.ts';
 import { templatesVersionDir, type GodotVersion } from '../godot/locate.ts';
 import { runProcess } from '../godot/process.ts';
@@ -13,6 +13,78 @@ import { getValue, parseConfig } from '../util/configFile.ts';
 import { listProjectFiles } from './project.ts';
 import { paging, projectPath } from './schemas.ts';
 import { PROCESS, registerTool, WRITES } from './registry.ts';
+
+/** The .tscn/.tres files the worker's resave visits (as its collect_files() does). */
+function resaveCandidates(root: string, includeAddons: boolean): string[] {
+  const out: string[] = [];
+  const walk = (dir: string, top: boolean) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (e.name.startsWith('.')) continue;
+      const abs = join(dir, e.name);
+      let st;
+      try {
+        st = statSync(abs);
+      } catch {
+        continue;
+      }
+      if (st.isFile() && /\.(tscn|tres)$/i.test(e.name)) out.push(abs);
+      else if (e.isDirectory() && !(top && e.name === 'addons' && !includeAddons) && !existsSync(join(abs, '.gdignore'))) walk(abs, false);
+    }
+  };
+  walk(root, true);
+  return out;
+}
+
+/**
+ * Re-save every scene/resource through the worker. The worker checks each
+ * file after writing it, so a run that dies part-way (crash, timeout) could
+ * leave one unchecked: every file is copied first, and if the run fails,
+ * each file it changed is put back.
+ */
+export async function resaveWithBackup(
+  ctx: AppContext,
+  project: ProjectRef,
+  includeAddons: boolean,
+  operation: string,
+  signal?: AbortSignal,
+): Promise<Record<string, unknown>> {
+  ctx.assertWritable(operation);
+  return ctx.locks.run(project.root, async () => {
+    const files = resaveCandidates(project.root, includeAddons);
+    const dir = mkdtempSync(join(tmpdir(), 'godot-mcp-resave-'));
+    try {
+      files.forEach((f, i) => copyFileSync(f, join(dir, String(i))));
+      try {
+        const { results } = await ctx.runOps(project, [{ op: 'resave_resources', args: { include_addons: includeAddons } }], {
+          signal,
+          mutates: true,
+          operation,
+        });
+        return results[0] as Record<string, unknown>;
+      } catch (e) {
+        let restored = 0;
+        files.forEach((f, i) => {
+          const copy = join(dir, String(i));
+          if (!existsSync(f) || !readFileSync(f).equals(readFileSync(copy))) {
+            copyFileSync(copy, f);
+            restored++;
+          }
+        });
+        const err = toGodotMcpError(e, operation);
+        err.details.context = { ...(err.details.context ?? {}), restoredFiles: restored };
+        throw err;
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
 
 function importInfo(abs: string): Record<string, unknown> {
   const meta = `${abs}.import`;
@@ -103,13 +175,24 @@ export function checkTemplates(version: GodotVersion, platform: string): { dir: 
   return { dir, installed: matching.length > 0, matching };
 }
 
+/** Files an export must never replace inside the project (its sources and settings). */
+const PROJECT_SOURCE_FILE =
+  /\.(tscn|scn|tres|res|gd|gdshader|gdshaderinc|cs|csproj|sln|godot|cfg|import|uid|gdextension|svg|glb|gltf|blend|fbx|obj|ttf|otf|wav|ogg|mp3)$/i;
+
 function resolveExportOutput(ctx: AppContext, project: ProjectRef, outputPath: string): string {
   // Outputs may go inside the project (e.g. build/) or inside an allowed root.
-  const abs = canonicalizeForCheck(
-    outputPath.startsWith('res://') || !/^([a-zA-Z]:[\\/]|\/)/.test(outputPath)
-      ? resolveInProject(outputPath, project, { forWrite: true, label: 'outputPath' }).abs
-      : outputPath,
-  );
+  const absolute = !outputPath.startsWith('res://') && /^([a-zA-Z]:[\\/]|\/)/.test(outputPath);
+  let abs = canonicalizeForCheck(absolute ? outputPath : resolveInProject(outputPath, project, { forWrite: true, label: 'outputPath' }).abs);
+  if (absolute && isWithin(project.root, abs)) {
+    // An absolute path into the project gets the same checks as a relative one
+    // (protected files, symlinks).
+    abs = canonicalizeForCheck(resolveInProject(relative(project.root, abs).split(sep).join('/'), project, { forWrite: true, label: 'outputPath' }).abs);
+  }
+  if (isWithin(project.root, abs) && PROJECT_SOURCE_FILE.test(abs)) {
+    throw new GodotMcpError(ErrorCode.PathNotAllowed, `outputPath would replace a project source or settings file: ${outputPath}`, {
+      hints: ['Export to a build folder with the platform extension, e.g. build/game.x86_64 or build/game.exe'],
+    });
+  }
   if (!isWithin(project.root, abs)) {
     if (ctx.config.allowedRoots.length === 0) {
       throw new GodotMcpError(ErrorCode.PathNotAllowed, 'Export outputs outside the project require GODOT_MCP_ALLOWED_ROOTS to include the destination', {
@@ -263,12 +346,7 @@ export function registerAssetTools(server: McpServer, ctx: AppContext): void {
         const { results } = await ctx.runOps(project, [{ op: 'uid_resolve', args: { uid: a.uid ?? '' } }], { signal });
         return { data: results[0] as Record<string, unknown> };
       }
-      const { results } = await ctx.runOps(project, [{ op: 'resave_resources', args: { include_addons: !!a.includeAddons } }], {
-        signal,
-        mutates: true,
-        operation: 'godot_uid:resave',
-      });
-      return { data: results[0] as Record<string, unknown> };
+      return { data: await resaveWithBackup(ctx, project, !!a.includeAddons, 'godot_uid:resave', signal) };
     },
   });
 }
