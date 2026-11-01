@@ -2,8 +2,8 @@ extends SceneTree
 ## Renders a scene with the real renderer and saves the viewport to PNG.
 ##
 ## Runs as `godot --path <project> --resolution WxH --script capture_runner.gd -- <request.json> <response.json>`
-## WITHOUT --headless (a headless display driver cannot render). Unlike the
-## MainLoop worker this is a SceneTree, so the project's autoloads run — the
+## WITHOUT --headless (a headless display driver cannot render). Unlike in the
+## worker, the project's autoloads really run here — the
 ## scene is genuinely executed, exactly as when the game runs.
 
 const PROTOCOL := 1

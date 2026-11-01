@@ -73,6 +73,49 @@ describe('KeyedMutex', () => {
     );
     assert.equal(await m.run('k', async () => 7), 7);
   });
+  it('is re-entrant within one call chain but still excludes other callers', async () => {
+    const m = new KeyedMutex();
+    const order: string[] = [];
+    const outer = m.run('k', async () => {
+      order.push('outer+');
+      // Nested use of the same key (and a second key) must not deadlock.
+      const inner = await m.run('k', async () => m.run('j', async () => 'inner'));
+      await new Promise((r) => setTimeout(r, 20));
+      order.push('outer-');
+      return inner;
+    });
+    const other = m.run('k', async () => {
+      order.push('other');
+    });
+    assert.equal(await outer, 'inner');
+    await other;
+    assert.deepEqual(order, ['outer+', 'outer-', 'other']);
+    assert.equal(m.isBusy('k'), false);
+  });
+  it('does not let a callback scheduled inside a locked section bypass a later holder', async () => {
+    const m = new KeyedMutex();
+    const order: string[] = [];
+    let late!: Promise<void>;
+    await m.run('k', async () => {
+      // Fires after this section has released the lock.
+      late = new Promise((resolve) =>
+        setTimeout(() => {
+          void m
+            .run('k', async () => {
+              order.push('timer');
+            })
+            .then(resolve);
+        }, 10),
+      );
+    });
+    await m.run('k', async () => {
+      order.push('B+');
+      await new Promise((r) => setTimeout(r, 40));
+      order.push('B-');
+    });
+    await late;
+    assert.deepEqual(order, ['B+', 'B-', 'timer']);
+  });
 });
 
 describe('config', () => {

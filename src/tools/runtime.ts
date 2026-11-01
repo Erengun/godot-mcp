@@ -25,25 +25,31 @@ export async function runGame(ctx: AppContext, a: RunArgs, signal?: AbortSignal)
   const project = ctx.project(a.projectPath);
   const scene = a.scene ? resolveInProject(a.scene, project, { mustExist: true, extensions: SCENE_EXTENSIONS, label: 'scene' }) : undefined;
   const godot = await ctx.godot();
-  const replaced: string[] = [];
-  for (const s of ctx.runtime.runningFor(project.root, 'game')) {
-    await ctx.runtime.stopSession(s);
-    replaced.push(s.id);
-  }
   const extra: string[] = [];
   if (a.quitAfterFrames) extra.push('--quit-after', String(a.quitAfterFrames));
   if (a.fixedFps) extra.push('--fixed-fps', String(a.fixedFps));
   if (a.resolution) extra.push('--resolution', a.resolution);
   if (a.debugCollisions) extra.push('--debug-collisions');
   if (a.debugNavigation) extra.push('--debug-navigation');
-  const id = ctx.runtime.start({
-    godotPath: godot.path,
-    projectRoot: project.root,
-    kind: 'game',
-    scene: scene?.res,
-    headless: a.headless,
-    extraArgs: extra,
-    maxLines: ctx.config.maxLogLines,
+  // Stopping the previous game and starting the new one is one step per
+  // project, so concurrent calls cannot each see "nothing running" and both
+  // start a game. The lock is not held while the game runs.
+  const { id, replaced } = await ctx.locks.run(`game:${project.root}`, async () => {
+    const replaced: string[] = [];
+    for (const s of ctx.runtime.runningFor(project.root, 'game')) {
+      await ctx.runtime.stopSession(s);
+      replaced.push(s.id);
+    }
+    const id = ctx.runtime.start({
+      godotPath: godot.path,
+      projectRoot: project.root,
+      kind: 'game',
+      scene: scene?.res,
+      headless: a.headless,
+      extraArgs: extra,
+      maxLines: ctx.config.maxLogLines,
+    });
+    return { id, replaced };
   });
   const session = ctx.runtime.get(id);
   const mode = a.mode ?? 'background';

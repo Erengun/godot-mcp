@@ -1,5 +1,7 @@
 # Final implementation audit — godot-mcp 2.0.0-dev.0
 
+> **Historical record.** This audit was written on 2026-10-31, before the 2.0 rewrite was merged. Some details below are out of date: for example, the headless worker is now a `SceneTree` that replaces autoloads with an inert placeholder (so they still never run), and every headless save is compared with the original file. For the current behaviour see [architecture.md](../architecture.md), [limitations.md](../limitations.md) and [security.md](../security.md). The open items in the verdict (C#, the third-party conformance suite, coverage gaps) still apply.
+
 - **Repository:** fork `https://github.com/Erengun/godot-mcp`, branch `feat/production-grade-mcp`, based on upstream `1209744`.
 - **State:** all changes are uncommitted in the working tree. Nothing has been committed, pushed, merged or published.
 - **Date:** 2026-10-31.

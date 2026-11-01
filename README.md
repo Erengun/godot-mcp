@@ -28,7 +28,7 @@ It works through Godot's own APIs, not by guessing at `.tscn` text. It edits sce
 This project started as a fork of [Coding-Solo/godot-mcp](https://github.com/Coding-Solo/godot-mcp), which proved the idea. An audit of upstream `1209744` ([details](docs/audits/initial-architecture-audit.md)) found problems that were too deep for small patches, so 2.0 is a rewrite.
 
 **Security fixes:**
-- **Project code ran on every operation.** The upstream worker instantiated the project's autoload scripts, even for read-only calls like `get_uid`. The 2.0 worker uses a Godot `MainLoop`, which never loads autoloads.
+- **Project code ran on every operation.** The upstream worker instantiated the project's autoload scripts, even for read-only calls like `get_uid`. The 2.0 worker registers autoload names with an empty placeholder node, so scripts that use them still compile, but the autoloads themselves never run.
 - **Any path was accepted.** Upstream only checked for `..`. In 2.0, paths are resolved through symlinks and must stay inside the project. Protected files (`.godot/`, `project.godot`, `*.import`, …) cannot be written, and you can optionally limit everything to `GODOT_MCP_ALLOWED_ROOTS`.
 - **Scripts could be injected through properties.** Upstream `add_node` loaded any `"res://…"` string, so `properties: {"script": "res://evil.gd"}` attached arbitrary code. In 2.0, values are converted by the property's declared type, resources must match the property's class, and scripts only attach through a dedicated, validated action.
 - **No limits on processes.** Upstream had no timeouts, output bounds or cancellation. In 2.0 every Godot process has a timeout, bounded output and AbortSignal cancellation, and it is killed by process group.
@@ -106,6 +106,8 @@ claude mcp add godot \
 ```
 
 On Windows, `GODOT_PATH` points at `Godot_v4.x-stable_win64.exe`. On Linux it points at the extracted `Godot_v4.x-stable_linux.x86_64` binary.
+
+A Flatpak or Snap Godot runs in a sandbox with its own private `/tmp`, so it cannot read the request files the server writes to the system temp directory, and it may not see projects outside your home folder. Prefer the official binary; if you must use the sandboxed one, set `TMPDIR` (in the server's `env`) to a folder both can access, such as `~/.cache/godot-mcp`.
 
 ## Usage
 

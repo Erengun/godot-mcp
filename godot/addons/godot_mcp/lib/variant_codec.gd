@@ -827,7 +827,7 @@ static func suggest(o: Object, name: String, limit: int = 5) -> Array:
 
 
 ## Resolve "a:b:c" sub-property paths. Returns [target_object, final_name] or fail().
-static func resolve_target(o: Object, path: String) -> Variant:
+static func resolve_target(o: Object, path: String, ctx: Dictionary = {}) -> Variant:
 	var parts := path.split(":")
 	var target: Object = o
 	for i in parts.size() - 1:
@@ -836,37 +836,82 @@ static func resolve_target(o: Object, path: String) -> Variant:
 			return U.fail("NOT_FOUND", "'%s' is not an object-valued property on %s" % [parts[i], target.get_class()])
 		if sub is Resource and is_external_resource(sub):
 			return U.fail("CONFLICT", "'%s' refers to the external resource %s; edit that file with godot_resource_edit instead of changing it through this node" % [parts[i], sub.resource_path], {"path": sub.resource_path})
+		if sub is Resource and (sub as Resource).resource_path.contains("::") and ctx.has("self_path"):
+			# A sub-resource of another scene (the one this scene inherits or
+			# instances): this scene does not store it, so a change would be lost.
+			var owner_file := (sub as Resource).resource_path.get_slice("::", 0)
+			if owner_file != str(ctx["self_path"]):
+				return U.fail("CONFLICT", "'%s' is a sub-resource of %s, which this scene does not store; change it in that scene, or set '%s' to a new resource here" % [parts[i], owner_file, parts[i]], {"path": owner_file})
 		if sub is Node:
 			return U.fail("INVALID_ARGUMENT", "Sub-property paths cannot traverse nodes ('%s')" % parts[i])
 		target = sub
 	return [target, parts[parts.size() - 1]]
 
 
+## Internal properties that are still meant to be set (the inspector's
+## layout mode and anchor preset, which apply the anchors and offsets).
+const SETTABLE_INTERNAL := ["anchors_preset", "layout_mode"]
+
+
+## The keys of a properties object in the order to set them: a Control's
+## layout mode before its anchor preset (which only applies in anchors mode),
+## then the rest as given.
+static func ordered_keys(props: Dictionary) -> Array:
+	var out := []
+	for first in ["layout_mode", "anchors_preset"]:
+		if props.has(first):
+			out.append(first)
+	for k in props.keys():
+		if not out.has(k):
+			out.append(k)
+	return out
+
+
 ## Validated property assignment. Returns {"property", "value"} or fail().
 static func set_property(o: Object, path: String, j: Variant, ctx: Dictionary = {}) -> Variant:
 	if path.is_empty():
 		return U.fail("INVALID_ARGUMENT", "Property name must not be empty")
-	var resolved = resolve_target(o, path)
+	var resolved = resolve_target(o, path, ctx)
 	if U.is_fail(resolved):
 		return resolved
 	var target: Object = resolved[0]
 	var name: String = resolved[1]
 	if name in FORBIDDEN_PROPERTIES and not (name == "script" and ctx.get("allow_script", false)):
 		return U.fail("INVALID_ARGUMENT", "Property '%s' cannot be set directly; use the dedicated action (attach_script, rename_node, ...)" % name)
+	if name.begins_with("metadata/"):
+		# Metadata is not in the property list until it exists.
+		var meta := name.substr(9)
+		if not meta.is_valid_identifier():
+			return U.fail("INVALID_ARGUMENT", "Metadata name '%s' must be a valid identifier" % meta)
+		var mv = decode(j, {}, ctx)
+		if U.is_fail(mv):
+			return mv
+		if mv == null:
+			target.remove_meta(meta)
+		else:
+			target.set_meta(meta, mv)
+		return {"property": path, "value": encode(target.get_meta(meta, null), 1)}
 	var info := property_info(target, name)
 	if info.is_empty():
 		return U.fail("NOT_FOUND", "%s has no property '%s'" % [target.get_class(), name], {"suggestions": suggest(target, name)})
 	var usage: int = info["usage"]
-	if name.begins_with("_") or (usage & PROPERTY_USAGE_INTERNAL):
+	if name.begins_with("_") or (usage & PROPERTY_USAGE_INTERNAL and not name in SETTABLE_INTERNAL):
 		return U.fail("INVALID_ARGUMENT", "Property '%s' is internal and cannot be set" % name)
 	if usage & PROPERTY_USAGE_READ_ONLY:
+		if target is Control and (target as Control).get_parent() is Container:
+			return U.fail("INVALID_ARGUMENT", "Property '%s' is read-only here: the parent Container lays out this Control (use size_flags_* / custom_minimum_size, or move it out of the Container)" % name)
 		return U.fail("INVALID_ARGUMENT", "Property '%s' is read-only" % name)
 	var value = decode(j, info, ctx)
 	if U.is_fail(value):
 		var e: Dictionary = value[U.ERR_KEY]
 		e["message"] = "%s: %s" % [path, e["message"]]
 		return value
+	var errors_before := U.project_error_count()
 	target.set(name, value)
+	if U.project_error_count() > errors_before:
+		# A setter (or _set) of the project's script failed part-way: the value
+		# may not have been stored, or only partly.
+		return U.fail("OPERATION_FAILED", "Setting '%s' raised an error in the project's script (see diagnostics), so the value may not have been stored. Nothing was saved." % path)
 	var after = target.get(name)
 	if typeof(after) != typeof(value) and not (value == null and typeof(after) == TYPE_OBJECT):
 		return U.fail("OPERATION_FAILED", "Godot did not accept the value for '%s' (expected %s)" % [path, type_string(int(info["type"]))])

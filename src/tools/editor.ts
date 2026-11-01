@@ -41,11 +41,16 @@ export async function launchEditor(
   ctx.assertWritable('godot_editor_launch');
   const project = ctx.project(projectPathArg);
   const godot = await ctx.godot();
-  const already = ctx.runtime.runningFor(project.root, 'editor');
-  if (already.length > 0) {
-    return { alreadyRunning: true, session: ctx.runtime.status(already[0]!) };
+  // Check-then-start is one step per project, so concurrent launches open one editor.
+  const started = await ctx.locks.run(`editor:${project.root}`, async () => {
+    const running = ctx.runtime.runningFor(project.root, 'editor')[0];
+    if (running) return { running };
+    return { id: ctx.runtime.start({ godotPath: godot.path, projectRoot: project.root, kind: 'editor', headless, maxLines: ctx.config.maxLogLines }) };
+  });
+  if (started.running) {
+    return { alreadyRunning: true, session: ctx.runtime.status(started.running) };
   }
-  const id = ctx.runtime.start({ godotPath: godot.path, projectRoot: project.root, kind: 'editor', headless, maxLines: ctx.config.maxLogLines });
+  const id = started.id!;
   const session = ctx.runtime.get(id, 'editor');
   await ctx.runtime.waitFor(session, 2500, signal);
   let bridge = false;
@@ -131,27 +136,28 @@ export function registerEditorTools(server: McpServer, ctx: AppContext): void {
       if (a.action === 'status') return { data: status() };
       ctx.assertWritable(`godot_editor_plugin:${a.action}`);
       if (a.action === 'install') {
-        const ver = pluginVersion(join(target, 'plugin.cfg'));
-        if (existsSync(target) && !ver) {
-          throw new GodotMcpError(ErrorCode.Conflict, 'addons/godot_mcp exists but is not the godot-mcp plugin; refusing to overwrite it');
-        }
-        if (existsSync(target) && !a.overwrite && ver === pluginVersion(join(bundled, 'plugin.cfg'))) {
-          // Already up to date.
-        } else {
-          resolveInProject('addons/godot_mcp/plugin.cfg', project, { forWrite: true, label: 'plugin target' });
-          await ctx.locks.run(project.root, async () => {
+        // The whole install (copy + enable + project.godot backup) is one locked step.
+        await ctx.locks.run(project.root, async () => {
+          const ver = pluginVersion(join(target, 'plugin.cfg'));
+          if (existsSync(target) && !ver) {
+            throw new GodotMcpError(ErrorCode.Conflict, 'addons/godot_mcp exists but is not the godot-mcp plugin; refusing to overwrite it');
+          }
+          if (!(existsSync(target) && !a.overwrite && ver === pluginVersion(join(bundled, 'plugin.cfg')))) {
+            resolveInProject('addons/godot_mcp/plugin.cfg', project, { forWrite: true, label: 'plugin target' });
             rmSync(target, { recursive: true, force: true });
             cpSync(bundled, target, { recursive: true, dereference: false, filter: (src) => !src.endsWith('.uid') });
-          });
-        }
-        if (a.enable ?? true) {
-          ctx.backupProjectFile(project);
-          await ctx.runOps(project, [{ op: 'mcp_plugin_set_enabled', args: { enabled: true } }], { signal, mutates: true });
-        }
+          }
+          if (a.enable ?? true) {
+            ctx.backupProjectFile(project);
+            await ctx.runOps(project, [{ op: 'mcp_plugin_set_enabled', args: { enabled: true } }], { signal, mutates: true });
+          }
+        });
         return { data: status(), summary: 'Plugin installed. Start (or restart) the editor to activate the bridge.' };
       }
-      ctx.backupProjectFile(project);
-      const { results } = await ctx.runOps(project, [{ op: 'mcp_plugin_set_enabled', args: { enabled: a.action === 'enable' } }], { signal, mutates: true });
+      const { results } = await ctx.locks.run(project.root, async () => {
+        ctx.backupProjectFile(project);
+        return ctx.runOps(project, [{ op: 'mcp_plugin_set_enabled', args: { enabled: a.action === 'enable' } }], { signal, mutates: true });
+      });
       return { data: { ...(results[0] as Record<string, unknown>), ...status() } };
     },
   });
@@ -184,10 +190,10 @@ export function registerEditorTools(server: McpServer, ctx: AppContext): void {
       const project = ctx.project(a.projectPath);
       const mutating = ['open_scene', 'save_scene', 'reload_scene', 'set_properties', 'add_node', 'remove_node', 'play', 'stop', 'selection_set', 'scan'];
       if (mutating.includes(a.action)) ctx.assertWritable(`godot_editor:${a.action}`);
-      const scene = a.scene
-        ? resolveInProject(a.scene, project, { mustExist: a.action !== 'play', extensions: a.action === 'play' ? undefined : SCENE_EXTENSIONS, label: 'scene' })
-            .res
-        : undefined;
+      // play takes "main" / "current" literally; any other scene must be an existing scene file.
+      const playKeyword = a.action === 'play' && (a.scene === 'main' || a.scene === 'current');
+      const scene =
+        a.scene && !playKeyword ? resolveInProject(a.scene, project, { mustExist: true, extensions: SCENE_EXTENSIONS, label: 'scene' }).res : undefined;
       const bridge = await ctx.editor.require(project.root);
       let method: string = a.action;
       let params: Record<string, unknown> = {};
@@ -224,7 +230,7 @@ export function registerEditorTools(server: McpServer, ctx: AppContext): void {
           params = { files: (a.files ?? []).map((f) => resolveInProject(f, project, { label: 'files[]' }).res) };
           break;
         case 'play':
-          params = { scene: a.scene ? scene : 'main' };
+          params = { scene: playKeyword ? a.scene : (scene ?? 'main') };
           break;
         case 'stop':
           method = 'stop_playing';
@@ -233,7 +239,12 @@ export function registerEditorTools(server: McpServer, ctx: AppContext): void {
           params = { since_ms: a.sinceMs ?? 0 };
           break;
       }
-      const result = await bridge.request<Record<string, unknown>>(method, params);
+      // Saving (or reloading) through the editor touches the scene file on disk,
+      // so it is ordered with headless writes to the same project.
+      const result =
+        a.action === 'save_scene' || a.action === 'reload_scene'
+          ? await ctx.locks.run(project.root, () => bridge.request<Record<string, unknown>>(method, params))
+          : await bridge.request<Record<string, unknown>>(method, params);
       return { data: { action: a.action, ...result } };
     },
   });

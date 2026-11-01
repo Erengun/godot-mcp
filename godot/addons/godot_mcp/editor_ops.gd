@@ -68,6 +68,16 @@ func dispatch(method: String, params: Dictionary) -> Variant:
 	return U.fail("INVALID_ARGUMENT", "Unknown editor method '%s'" % method)
 
 
+## Scenes open in the editor with unsaved changes. Godot added
+## get_unsaved_scenes() in 4.7; older editors do not say, so every open scene
+## is treated as possibly unsaved (headless writes to it are refused, and
+## reloading it asks for discardUnsaved).
+static func _unsaved_scenes() -> Array:
+	if EditorInterface.has_method("get_unsaved_scenes"):
+		return Array(EditorInterface.call("get_unsaved_scenes"))
+	return Array(EditorInterface.get_open_scenes())
+
+
 func status() -> Dictionary:
 	var root := EditorInterface.get_edited_scene_root()
 	return {
@@ -76,11 +86,13 @@ func status() -> Dictionary:
 		"godot_version": Engine.get_version_info().get("string", ""),
 		"edited_scene": root.scene_file_path if root != null else null,
 		"open_scenes": Array(EditorInterface.get_open_scenes()),
-		"unsaved_scenes": Array(EditorInterface.get_unsaved_scenes()),
+		"unsaved_scenes": _unsaved_scenes(),
+		"unsaved_tracking": EditorInterface.has_method("get_unsaved_scenes"),
 		"playing": EditorInterface.is_playing_scene(),
 		"playing_scene": EditorInterface.get_playing_scene(),
 		"filesystem_scanning": EditorInterface.get_resource_filesystem().is_scanning(),
-		"importing": EditorInterface.get_resource_filesystem().is_importing(),
+		# (EditorFileSystem.is_importing() arrived in Godot 4.7.)
+		"importing": EditorInterface.get_resource_filesystem().call("is_importing") if EditorInterface.get_resource_filesystem().has_method("is_importing") else false,
 	}
 
 
@@ -89,7 +101,7 @@ func scene_state(params: Dictionary) -> Variant:
 	if U.is_fail(p):
 		return p
 	var open := Array(EditorInterface.get_open_scenes())
-	var unsaved := Array(EditorInterface.get_unsaved_scenes())
+	var unsaved := _unsaved_scenes()
 	return {"path": p, "open": p in open, "unsaved": p in unsaved, "edited": EditorInterface.get_edited_scene_root() != null and EditorInterface.get_edited_scene_root().scene_file_path == p}
 
 
@@ -126,7 +138,7 @@ func scene_tree(params: Dictionary) -> Variant:
 	var selected := EditorInterface.get_selection().get_selected_nodes()
 	var out := []
 	_walk(root, root, 0, max_depth, selected, bool(params.get("include_properties", false)), out)
-	return {"scene": root.scene_file_path, "unsaved": root.scene_file_path in Array(EditorInterface.get_unsaved_scenes()), "nodes": out}
+	return {"scene": root.scene_file_path, "unsaved": root.scene_file_path in _unsaved_scenes(), "nodes": out}
 
 
 func _walk(root: Node, n: Node, depth: int, max_depth: int, selected: Array, props: bool, out: Array) -> void:
@@ -204,7 +216,7 @@ func reload_scene(params: Dictionary) -> Variant:
 	var p = U.to_res_path(params.get("path"))
 	if U.is_fail(p):
 		return p
-	if p in Array(EditorInterface.get_unsaved_scenes()) and not bool(params.get("discard_unsaved", false)):
+	if p in _unsaved_scenes() and not bool(params.get("discard_unsaved", false)):
 		return U.fail("CONFLICT", "%s has unsaved changes in the editor; refusing to reload (pass discard_unsaved: true only if the user agreed to lose them)" % p)
 	if not p in Array(EditorInterface.get_open_scenes()):
 		return {"reloaded": false, "reason": "scene is not open"}
@@ -227,15 +239,27 @@ func set_properties(params: Dictionary) -> Variant:
 		return U.fail("INVALID_ARGUMENT", "properties must be a non-empty object")
 	# Decode and validate everything first; nothing is applied on error.
 	var staged := []
-	for k in props.keys():
+	for k in C.ordered_keys(props):
 		var key := str(k)
 		if key.contains(":"):
 			return U.fail("INVALID_ARGUMENT", "Sub-property paths are not supported in live edits; set the whole value")
 		if key in C.FORBIDDEN_PROPERTIES:
 			return U.fail("INVALID_ARGUMENT", "Property '%s' cannot be set directly" % key)
+		if key.begins_with("metadata/"):
+			# Metadata is not in the property list until it exists (null removes it).
+			if not key.substr(9).is_valid_identifier():
+				return U.fail("INVALID_ARGUMENT", "Metadata name '%s' must be a valid identifier" % key.substr(9))
+			var mv = C.decode(props[k], {}, {"node": n, "root": root, "self_path": root.scene_file_path})
+			if U.is_fail(mv):
+				return mv
+			staged.append([key, mv, n.get_meta(key.substr(9), null)])
+			continue
 		var info := C.property_info(n, key)
 		if info.is_empty():
 			return U.fail("NOT_FOUND", "%s has no property '%s'" % [n.get_class(), key], {"suggestions": C.suggest(n, key)})
+		# The same rules as headless edits (variant_codec.set_property()).
+		if key.begins_with("_") or (int(info["usage"]) & PROPERTY_USAGE_INTERNAL and not key in C.SETTABLE_INTERNAL):
+			return U.fail("INVALID_ARGUMENT", "Property '%s' is internal and cannot be set" % key)
 		if int(info["usage"]) & PROPERTY_USAGE_READ_ONLY:
 			return U.fail("INVALID_ARGUMENT", "Property '%s' is read-only" % key)
 		var v = C.decode(props[k], info, {"node": n, "root": root, "self_path": root.scene_file_path})

@@ -39,11 +39,14 @@ describe('scripts and runtime', { skip: SKIP_NO_GODOT }, () => {
     assert.equal(results.find((x) => x.path === 'res://good.gd')!.valid, true);
   });
 
-  it('treats autoload references as notes, not errors', async () => {
+  it('fully validates scripts that use autoloads', async () => {
+    // The worker registers autoload names (without running them), so these
+    // scripts compile like any other.
     const r = await h.ok('godot_script_validate', { projectPath: p.root, paths: ['uses_autoload.gd'] });
-    const e = (r.results as Array<{ valid: boolean; diagnostics?: Diag[] }>)[0]!;
+    const e = (r.results as Array<{ valid: boolean; partial?: string; diagnostics?: Diag[] }>)[0]!;
     assert.equal(e.valid, true, JSON.stringify(e));
-    assert.ok(e.diagnostics?.some((d) => d.severity === 'info'));
+    assert.equal(e.partial, undefined, JSON.stringify(e));
+    assert.ok(!e.diagnostics?.some((d) => d.severity === 'error' || d.severity === 'script_error'), JSON.stringify(e));
   });
 
   it('validates unsaved source', async () => {
@@ -69,6 +72,8 @@ describe('scripts and runtime', { skip: SKIP_NO_GODOT }, () => {
     assert.equal(created.created, true);
     const e = await h.fail('godot_script_write', { projectPath: p.root, path: 'scripts/new.gd', overwrite: true, content: 'extends Node\nfunc ok( -> int:\n' });
     assert.equal(e.code, 'OPERATION_FAILED');
+    // Refused before the write: the broken text never replaced the file.
+    assert.match(e.message, /nothing was written/);
     assert.match(readFileSync(join(p.root, 'scripts/new.gd'), 'utf8'), /return 1/);
     assert.equal(
       (await h.fail('godot_script_write', { projectPath: p.root, path: 'scripts/broken.gd', content: 'extends Node\nfunc (' })).code,
@@ -86,7 +91,6 @@ describe('scripts and runtime', { skip: SKIP_NO_GODOT }, () => {
       scenePath: 'ok.tscn',
       actions: [{ action: 'attach_script', node: '.', script: 'ok_main.gd' }],
     });
-    assert.match(String((att.actions as Array<{ note?: string }>)[0]!.note), /autoload/);
     assert.match(readFileSync(join(p.root, 'ok.tscn'), 'utf8'), /path="res:\/\/ok_main.gd"/);
     // A genuinely broken script is still refused.
     assert.equal(
@@ -162,5 +166,14 @@ describe('scripts and runtime', { skip: SKIP_NO_GODOT }, () => {
     assert.ok(Array.isArray(dbg.output));
     await h.ok('stop_project');
     assert.equal((await h.fail('stop_project')).code, 'PROCESS_NOT_RUNNING');
+  });
+
+  it('keeps one game per project when runs are started concurrently', async () => {
+    // Regression: concurrent calls could each see no running game and both start one.
+    await Promise.all([1, 2, 3].map(() => h.ok('godot_run', { projectPath: p.root, scene: 'loop.tscn', headless: true, startupWaitMs: 300 })));
+    const status = await h.ok('godot_runtime_status');
+    const running = (status.sessions as Array<{ id: string; running: boolean; kind: string }>).filter((s) => s.running && s.kind === 'game');
+    assert.equal(running.length, 1, JSON.stringify(status.sessions));
+    await h.ok('godot_stop', { sessionId: running[0]!.id });
   });
 });

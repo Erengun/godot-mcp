@@ -6,6 +6,7 @@ extends RefCounted
 const U = preload("../../addons/godot_mcp/lib/mcp_util.gd")
 const C = preload("../../addons/godot_mcp/lib/variant_codec.gd")
 const P = preload("../../addons/godot_mcp/lib/class_policy.gd")
+const G = preload("script_guard.gd")
 
 
 static func ops() -> Dictionary:
@@ -130,12 +131,24 @@ static func resource_edit(args: Dictionary) -> Variant:
 		return U.fail("INVALID_ARGUMENT", "Only .tres/.res resources can be edited; imported assets are configured through their .import settings")
 	if not FileAccess.file_exists(path):
 		return U.fail("NOT_FOUND", "Resource does not exist: %s" % path)
+	# Refused when a script it uses does not load or compile, so the saved file
+	# never loses it (see script_guard.gd).
+	var prep := G.prepare(path)
+	if not prep["broken"].is_empty():
+		return G.refusal(path, prep["broken"])
 	var res = ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_IGNORE)
 	if res == null:
 		return U.fail("OPERATION_FAILED", "Failed to load %s" % path)
 	if res is Script:
 		return U.fail("CLASS_NOT_ALLOWED", "Scripts are edited as source files, not as resources")
+	var binary := G.binary_scripted(path, res)
+	if not binary.is_empty():
+		return G.binary_refusal(path, binary)
 	res.take_over_path(path)
+	var had_script: Script = res.get_script() as Script
+	# The baseline is the resource as Godot itself re-saves it (see text_loss()).
+	var baseline := G.text_of(res, "baseline")
+	var before_text := FileAccess.get_file_as_string(path) if path.get_extension().to_lower() == "tres" else baseline
 	var props = args.get("properties", {})
 	if typeof(props) != TYPE_DICTIONARY or (props as Dictionary).is_empty():
 		return U.fail("INVALID_ARGUMENT", "properties must be a non-empty object")
@@ -148,6 +161,13 @@ static func resource_edit(args: Dictionary) -> Variant:
 	var saved = _save_and_verify(res, path)
 	if U.is_fail(saved):
 		return saved
+	# The caller rolls the file back when this fails after saving.
+	var lost := G.verify_resource(had_script, ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_IGNORE))
+	if lost.is_empty() and not before_text.is_empty():
+		var after_text := FileAccess.get_file_as_string(path) if path.get_extension().to_lower() == "tres" else G.text_of(res, "after")
+		lost = G.text_loss(before_text, after_text, {"main": res, "keys": applied, "baseline": baseline})
+	if not lost.is_empty():
+		return U.fail("OPERATION_FAILED", "Saving %s would lose data (%s); the change was not kept. Make it in the Godot editor instead." % [path, lost])
 	saved["properties"] = applied
 	return saved
 
@@ -316,6 +336,8 @@ static func mesh_library_export(args: Dictionary) -> Variant:
 	if not (ps is PackedScene):
 		return U.fail("NOT_FOUND", "Scene not found or invalid: %s" % sp)
 	var root: Node = ps.instantiate()
+	if root == null:
+		return U.fail("OPERATION_FAILED", "Scene %s could not be instantiated" % sp)
 	var only: Array = args.get("items", [])
 	var lib := MeshLibrary.new()
 	var id := 0

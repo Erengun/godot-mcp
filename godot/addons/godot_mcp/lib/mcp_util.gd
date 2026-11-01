@@ -17,6 +17,21 @@ static func is_fail(value: Variant) -> bool:
 	return typeof(value) == TYPE_DICTIONARY and (value as Dictionary).has(ERR_KEY)
 
 
+## Runtime errors raised so far by the headless worker's own scripts (0 in the
+## editor plugin, which has no worker logger). Compare before/after a step to
+## detect that it was aborted.
+static func worker_crash_count() -> int:
+	var lg = Engine.get_meta("godot_mcp_logger", null)
+	return int(lg.crashes) if lg != null else 0
+
+
+## Runtime errors raised so far by the project's own scripts in the headless
+## worker (always 0 in the editor, where non-tool scripts do not run).
+static func project_error_count() -> int:
+	var lg = Engine.get_meta("godot_mcp_logger", null)
+	return int(lg.project_errors) if lg != null else 0
+
+
 static func ok(value: Variant) -> Dictionary:
 	return {"value": value}
 
@@ -40,13 +55,17 @@ static func to_res_path(input: Variant) -> Variant:
 			continue
 		if seg == "..":
 			return fail("PATH_OUTSIDE_PROJECT", "Path must not contain '..': %s" % input)
+		# ':' names a drive or an alternate data stream on Windows; control
+		# characters have no place in a project path.
+		if seg.contains(":") or seg.contains("\u0000") or seg.strip_escapes() != seg:
+			return fail("INVALID_ARGUMENT", "Path contains characters not allowed in project paths: %s" % input)
 		parts.append(seg)
 	if parts.is_empty():
 		return fail("INVALID_ARGUMENT", "Path must name a file inside the project")
 	var res := "res://" + "/".join(parts)
-	var root := ProjectSettings.globalize_path("res://").simplify_path()
+	var root := ProjectSettings.globalize_path("res://").simplify_path().trim_suffix("/")
 	var abs := ProjectSettings.globalize_path(res).simplify_path()
-	if not abs.begins_with(root):
+	if not abs.begins_with(root + "/"):
 		return fail("PATH_OUTSIDE_PROJECT", "Path escapes the project: %s" % input)
 	return res
 
@@ -166,6 +185,17 @@ static func save_resource(res: Resource, path: String) -> int:
 	return OK
 
 
+## Put back what was at `path` before a save (or remove the file when there was none).
+static func restore_file(path: String, previous: PackedByteArray, existed: bool) -> void:
+	if not existed:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+		return
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f != null:
+		f.store_buffer(previous)
+		f.close()
+
+
 static func uid_text(path: String) -> String:
 	var id := read_uid(path)
 	return ResourceUID.id_to_text(id) if id != ResourceUID.INVALID_ID else ""
@@ -216,9 +246,13 @@ static func register_project_uids(limit: int = 50000) -> int:
 	return count[0]
 
 
-static func _register_dir(dir: String, count: Array, limit: int) -> void:
+## How deep project scans descend (they never follow linked directories).
+const MAX_DIR_DEPTH := 64
+
+
+static func _register_dir(dir: String, count: Array, limit: int, depth: int = 0) -> void:
 	var da := DirAccess.open(dir)
-	if da == null:
+	if da == null or depth > MAX_DIR_DEPTH:
 		return
 	for f in da.get_files():
 		if count[0] >= limit:
@@ -232,6 +266,6 @@ static func _register_dir(dir: String, count: Array, limit: int) -> void:
 				ResourceUID.add_id(id, target)
 				count[0] += 1
 	for sub in da.get_directories():
-		if sub.begins_with("."):
-			continue
-		_register_dir(dir.path_join(sub), count, limit)
+		if sub.begins_with(".") or da.is_link(sub):
+			continue  # (a linked directory may lead back up the tree)
+		_register_dir(dir.path_join(sub), count, limit, depth + 1)

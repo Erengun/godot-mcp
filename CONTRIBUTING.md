@@ -37,11 +37,14 @@ By participating in this project, you agree to maintain a respectful and inclusi
 
 ### Setting Up the Development Environment
 
+You need **Node.js 22.18 or newer** for development: the tests and helper scripts run TypeScript files directly. (The built server itself runs on Node 20+.)
+
 1. Clone the repository
 2. Install dependencies with `npm install`
 3. Build the project with `npm run build`
 4. For development with auto-rebuild, use `npm run watch`
-5. Run `npm test` (requires Godot 4.5+; set `GODOT_PATH`)
+5. Run `npm test` (requires Godot 4.5+; set `GODOT_PATH`). The integration tests run against the built server (`npm run test:integration` builds it first; build again before running a single test file).
+6. After changing a tool's description or input schema, run `npm run docs:tools` to regenerate `docs/mcp-tools.md`.
 
 ### Project Structure
 

@@ -158,3 +158,28 @@ describe('project, API, assets, UID, export and .NET tools', { skip: SKIP_NO_GOD
 function rmBroken(root: string): void {
   for (const f of readdirSync(root)) if (['broken.tscn', 'oops.gd', 'fake.png'].includes(f)) writeFile(root, f, '');
 }
+
+describe('resave rollback', { skip: SKIP_NO_GODOT }, () => {
+  it('puts back every file a resave changed when the run dies part-way', async () => {
+    const h = await startServer({ env: { GODOT_MCP_OP_TIMEOUT_MS: '6000' } });
+    const p = tempProject('ResaveRollback');
+    try {
+      // a.tscn is re-saved first (it gains a uid); zz.tres then hangs the worker until it is killed.
+      writeFile(p.root, 'a.tscn', '[gd_scene format=3]\n\n[node name="A" type="Node2D"]\n');
+      writeFile(p.root, 'slow.gd', 'extends Resource\nfunc _init() -> void:\n\tOS.delay_msec(30000)\n');
+      writeFile(
+        p.root,
+        'zz.tres',
+        '[gd_resource type="Resource" script_class="" load_steps=2 format=3]\n\n[ext_resource type="Script" path="res://slow.gd" id="1"]\n\n[resource]\nscript = ExtResource("1")\n',
+      );
+      const before = readFileSync(join(p.root, 'a.tscn'), 'utf8');
+      const e = await h.fail('godot_uid', { projectPath: p.root, action: 'resave' });
+      assert.equal(e.code, 'TIMEOUT', JSON.stringify(e));
+      assert.ok(((e.context as { restoredFiles?: number })?.restoredFiles ?? 0) >= 1, JSON.stringify(e));
+      assert.equal(readFileSync(join(p.root, 'a.tscn'), 'utf8'), before);
+    } finally {
+      await h.close();
+      p.cleanup();
+    }
+  });
+});

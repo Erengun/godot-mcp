@@ -205,7 +205,7 @@ Each action is an object with "action" plus fields:
 - rename_node {node, new_name}
 - move_node {node, new_parent, index?, keep_global_transform?}
 - reorder_node {node, index}
-- duplicate_node {node, new_name?, parent?}
+- duplicate_node {node, new_name?, parent?}  (only nodes this scene file defines itself — not nodes of an inherited scene or inside an instance; change or remove the original in a separate call)
 - instantiate_scene {parent, scene, name?, properties?, index?, if_exists?}  (keeps the sub-scene as an instance, never flattened)
 - set_properties {node, properties}
 - attach_script {node, script, properties?} / detach_script {node}
@@ -229,6 +229,7 @@ Node paths are relative to the scene root ("." = root; legacy "root/..." also ac
 | `actions` | object[] | yes |  |
 | `dryRun` | boolean |  | Validate and apply in memory but do not save |
 | `saveAs` | string |  | Save the result to a different file instead of overwriting |
+| `overwrite` | boolean |  | With saveAs: replace the target if it already exists |
 | `expectedHash` | string |  | Optional sha256 of the file as last read (returned by inspect/edit tools). The write is refused if the file changed since. |
 
 ## godot_resource_inspect
@@ -303,7 +304,7 @@ Textures must be imported (see godot_assets).
 
 **Validate GDScript** — readOnly: true, destructive: false, idempotent: true, openWorld: false
 
-Compile GDScript with Godot's own parser/analyzer and return errors with file and line (wrong argument counts, undeclared identifiers, type errors the analyzer can prove, bad syntax). Pass paths, all=true for every script, or source (unsaved text). Headless limitation: identifiers that refer to autoload singletons cannot be resolved and are reported as info notes, not errors. C# files are skipped (use godot_dotnet).
+Compile GDScript with Godot's own parser/analyzer and return errors with file and line (wrong argument counts, undeclared identifiers, type errors the analyzer can prove, bad syntax). Pass paths, all=true for every script, or source (unsaved text). Unsaved source is only analysed, never compiled or run, so none of its code executes; it may only preload/extend literal res:// paths inside the project, and rare compiler-stage errors are not reported for it (godot_script_write checks those). Scripts that use autoload singletons are validated fully (the autoloads themselves never run; a scene autoload is typed as a plain Node). C# files are skipped (use godot_dotnet).
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -330,7 +331,7 @@ Reflect a script through Godot: class_name, extends, base script, tool mode, met
 
 **Create or replace a script** — readOnly: false, destructive: false, idempotent: false, openWorld: false
 
-Write a .gd, .gdshader, .gdshaderinc or .cs file inside the project (atomic replace), then validate GDScript with Godot. By default a GDScript that fails to compile is rolled back to the previous content (or deleted if it was new) and the errors are returned; pass keepOnError=true to keep it. Use expectedHash to avoid overwriting concurrent changes. When the script declares a new class_name (or refers to a class_name Godot has not registered yet) the global class cache is refreshed with the editor importer (`--import`, which runs editor plugins) so other scripts can use the type; disable with refreshClassCache: "never".
+Write a .gd, .gdshader, .gdshaderinc or .cs file inside the project (atomic replace), validating GDScript with Godot. By default GDScript that Godot cannot parse or analyse is refused before anything is written, and one that then fails to compile is rolled back to the previous content (or deleted if it was new); the errors are returned either way. Pass keepOnError=true to keep a broken version. Use expectedHash to avoid overwriting concurrent changes. When the script declares a new class_name (or refers to a class_name Godot has not registered yet) the global class cache is refreshed with the editor importer (`--import`, which runs editor plugins) so other scripts can use the type; disable with refreshClassCache: "never".
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|

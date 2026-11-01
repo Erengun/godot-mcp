@@ -44,16 +44,40 @@ static func _node(root: Node, a: Dictionary, key: String, cls: String) -> Varian
 		return U.fail("NOT_FOUND", "Node not found: %s" % p)
 	if not n.is_class(cls):
 		return U.fail("INVALID_ARGUMENT", "Node '%s' is a %s, expected %s" % [p, n.get_class(), cls])
+	# A node of an instance whose children are not editable is not saved with
+	# this scene: the edit would be lost.
+	if n != root and n.owner != root:
+		var inst := n.owner
+		var editable := true
+		while inst != null and inst != root:
+			if inst.owner == null or not inst.owner.is_editable_instance(inst):
+				editable = false
+				break
+			inst = inst.owner
+		if not editable or inst == null:
+			return U.fail("CONFLICT", "Node '%s' belongs to an instanced sub-scene whose children are not editable, so the change would not be saved; enable editable children (set_editable_children) or edit the sub-scene file" % p)
 	return n
+
+
+## The file a resource is saved in when it is not this scene ("" for new
+## resources and this scene's own sub-resources): editing it here would not
+## be saved.
+static func _stored_elsewhere(res: Resource, ctx: Dictionary) -> String:
+	var path := res.resource_path
+	if path.is_empty():
+		return ""
+	var file := path.get_slice("::", 0)
+	return "" if file == str(ctx.get("self_path", "")) else file
 
 
 # ------------------------------------------------------------ animation
 
-static func _library(player: AnimationMixer, lib_name: String, create: bool) -> Variant:
+static func _library(player: AnimationMixer, lib_name: String, create: bool, ctx: Dictionary) -> Variant:
 	if player.has_animation_library(lib_name):
 		var lib := player.get_animation_library(lib_name)
-		if C.is_external_resource(lib):
-			return U.fail("CONFLICT", "Animation library '%s' is the external resource %s; edit that resource file instead" % [lib_name, lib.resource_path])
+		var elsewhere := _stored_elsewhere(lib, ctx)
+		if not elsewhere.is_empty():
+			return U.fail("CONFLICT", "Animation library '%s' is stored in %s, so editing it here would not be saved; edit that file instead" % [lib_name, elsewhere])
 		return lib
 	if not create:
 		return U.fail("NOT_FOUND", "AnimationPlayer has no library '%s'" % lib_name)
@@ -141,7 +165,7 @@ static func _anim_upsert(root: Node, a: Dictionary, ctx: Dictionary) -> Variant:
 	var player = _node(root, a, "player", "AnimationMixer")
 	if U.is_fail(player):
 		return player
-	var lib = _library(player, str(a.get("library", "")), true)
+	var lib = _library(player, str(a.get("library", "")), true, ctx)
 	if U.is_fail(lib):
 		return lib
 	var name := str(a.get("name", ""))
@@ -151,8 +175,8 @@ static func _anim_upsert(root: Node, a: Dictionary, ctx: Dictionary) -> Variant:
 	var created := false
 	if (lib as AnimationLibrary).has_animation(name) and not bool(a.get("replace", false)):
 		anim = (lib as AnimationLibrary).get_animation(name)
-		if C.is_external_resource(anim):
-			return U.fail("CONFLICT", "Animation '%s' is stored in %s; edit that resource instead" % [name, anim.resource_path])
+		if not _stored_elsewhere(anim, ctx).is_empty():
+			return U.fail("CONFLICT", "Animation '%s' is stored in %s, so editing it here would not be saved; edit that file instead" % [name, _stored_elsewhere(anim, ctx)])
 	else:
 		anim = Animation.new()
 		created = true
@@ -209,24 +233,24 @@ static func _anim_upsert(root: Node, a: Dictionary, ctx: Dictionary) -> Variant:
 	return {"action": "animation_upsert", "animation": full, "created": created, "length": anim.length, "loop_mode": anim.loop_mode, "tracks": track_results, "track_count": anim.get_track_count()}
 
 
-static func _get_anim(root: Node, a: Dictionary) -> Variant:
+static func _get_anim(root: Node, a: Dictionary, ctx: Dictionary) -> Variant:
 	var player = _node(root, a, "player", "AnimationMixer")
 	if U.is_fail(player):
 		return player
-	var lib = _library(player, str(a.get("library", "")), false)
+	var lib = _library(player, str(a.get("library", "")), false, ctx)
 	if U.is_fail(lib):
 		return lib
 	var name := str(a.get("name", ""))
 	if not (lib as AnimationLibrary).has_animation(name):
 		return U.fail("NOT_FOUND", "Animation '%s' not found; available: %s" % [name, ", ".join((lib as AnimationLibrary).get_animation_list())])
 	var anim := (lib as AnimationLibrary).get_animation(name)
-	if C.is_external_resource(anim):
-		return U.fail("CONFLICT", "Animation '%s' is stored in %s; edit that resource instead" % [name, anim.resource_path])
+	if not _stored_elsewhere(anim, ctx).is_empty():
+		return U.fail("CONFLICT", "Animation '%s' is stored in %s, so editing it here would not be saved; edit that file instead" % [name, _stored_elsewhere(anim, ctx)])
 	return [player, lib, anim]
 
 
 static func _anim_remove(root: Node, a: Dictionary, ctx: Dictionary) -> Variant:
-	var got = _get_anim(root, a)
+	var got = _get_anim(root, a, ctx)
 	if U.is_fail(got):
 		return got
 	(got[1] as AnimationLibrary).remove_animation(str(a.get("name")))
@@ -234,7 +258,7 @@ static func _anim_remove(root: Node, a: Dictionary, ctx: Dictionary) -> Variant:
 
 
 static func _anim_keys(root: Node, a: Dictionary, ctx: Dictionary) -> Variant:
-	var got = _get_anim(root, a)
+	var got = _get_anim(root, a, ctx)
 	if U.is_fail(got):
 		return got
 	var player: AnimationMixer = got[0]

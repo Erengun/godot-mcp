@@ -17,11 +17,11 @@ import * as z from 'zod/v4';
 import type { AppContext } from '../context.ts';
 import { ErrorCode, GodotMcpError } from '../errors.ts';
 import { resolveInProject, resolveSearchDirectory, SCENE_EXTENSIONS } from '../security/paths.ts';
+import { resaveWithBackup } from './assets.ts';
 import { launchEditor } from './editor.ts';
 import { findProjects, listProjectFiles, projectName } from './project.ts';
 import { DESTRUCTIVE, PROCESS, READ_ONLY, registerTool, WRITES } from './registry.ts';
 import { runGame } from './runtime.ts';
-import { guardedWrite } from './scene.ts';
 
 type Args = Record<string, unknown>;
 
@@ -189,8 +189,7 @@ export function registerLegacyTools(server: McpServer, ctx: AppContext): void {
         mustNotExist: true,
         label: 'scenePath',
       });
-      const guard = await ctx.guardFileWrite(project, scene);
-      const { result } = await guardedWrite(ctx, project, guard, async () => {
+      const { result } = await ctx.guardedWrite(project, scene, { operation: 'create_scene' }, async () => {
         const { results } = await ctx.runOps(
           project,
           [{ op: 'scene_create', args: { scene: scene.res, root_type: pick(a, 'rootNodeType', 'root_node_type', false) ?? 'Node2D', root_name: 'root' } }],
@@ -228,7 +227,6 @@ export function registerLegacyTools(server: McpServer, ctx: AppContext): void {
         extensions: SCENE_EXTENSIONS,
         label: 'scenePath',
       });
-      const guard = await ctx.guardFileWrite(project, scene);
       const action = {
         action: 'add_node',
         parent: pick(a, 'parentNodePath', 'parent_node_path', false) ?? '.',
@@ -236,7 +234,7 @@ export function registerLegacyTools(server: McpServer, ctx: AppContext): void {
         name: pick(a, 'nodeName', 'node_name'),
         properties: a.properties ?? {},
       };
-      const { result } = await guardedWrite(ctx, project, guard, async () => {
+      const { result } = await ctx.guardedWrite(project, scene, { operation: 'add_node' }, async () => {
         const { results } = await ctx.runOps(project, [{ op: 'scene_edit', args: { scene: scene.res, actions: [action] } }], { signal, mutates: true });
         return results[0] as Record<string, unknown>;
       });
@@ -279,8 +277,7 @@ export function registerLegacyTools(server: McpServer, ctx: AppContext): void {
       if (!['Sprite2D', 'Sprite3D', 'TextureRect'].includes(info.type ?? '')) {
         throw new GodotMcpError(ErrorCode.InvalidArgument, `Node is not a sprite-compatible type: ${String(info.type)}`);
       }
-      const guard = await ctx.guardFileWrite(project, scene);
-      const { result } = await guardedWrite(ctx, project, guard, async () => {
+      const { result } = await ctx.guardedWrite(project, scene, { operation: 'load_sprite' }, async () => {
         const { results } = await ctx.runOps(
           project,
           [{ op: 'scene_edit', args: { scene: scene.res, actions: [{ action: 'set_properties', node, properties: { texture: tex.res } }] } }],
@@ -315,8 +312,7 @@ export function registerLegacyTools(server: McpServer, ctx: AppContext): void {
         extensions: ['.res', '.tres', '.meshlib'],
         label: 'outputPath',
       });
-      const guard = await ctx.guardFileWrite(project, out);
-      const { result } = await guardedWrite(ctx, project, guard, async () => {
+      const { result } = await ctx.guardedWrite(project, out, { operation: 'export_mesh_library' }, async () => {
         const { results } = await ctx.runOps(
           project,
           [{ op: 'mesh_library_export', args: { scene: scene.res, output: out.res, items: a.meshItemNames ?? a.mesh_item_names ?? [] } }],
@@ -350,8 +346,7 @@ export function registerLegacyTools(server: McpServer, ctx: AppContext): void {
         extensions: SCENE_EXTENSIONS,
         label: newPath ? 'newPath' : 'scenePath',
       });
-      const guard = await ctx.guardFileWrite(project, target);
-      const { result } = await guardedWrite(ctx, project, guard, async () => {
+      const { result } = await ctx.guardedWrite(project, target, { operation: 'save_scene' }, async () => {
         const { results } = await ctx.runOps(project, [{ op: 'scene_save_as', args: { scene: scene.res, new_path: target.res, overwrite: true } }], {
           signal,
           mutates: true,
@@ -390,8 +385,7 @@ export function registerLegacyTools(server: McpServer, ctx: AppContext): void {
     annotations: WRITES,
     handler: async (a, { signal }) => {
       const project = ctx.project(pick(a, 'projectPath', 'project_path'));
-      const { results } = await ctx.runOps(project, [{ op: 'resave_resources', args: {} }], { signal, mutates: true });
-      return { data: results[0] as Record<string, unknown>, summary: 'Project UIDs updated.' };
+      return { data: await resaveWithBackup(ctx, project, false, 'update_project_uids', signal), summary: 'Project UIDs updated.' };
     },
   });
 }

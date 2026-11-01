@@ -13,6 +13,7 @@ const C = preload("../../addons/godot_mcp/lib/variant_codec.gd")
 const P = preload("../../addons/godot_mcp/lib/class_policy.gd")
 const A = preload("scene_authoring.gd")
 const PO = preload("project_ops.gd")
+const G = preload("script_guard.gd")
 
 
 static func ops() -> Dictionary:
@@ -27,7 +28,9 @@ static func ops() -> Dictionary:
 
 # ------------------------------------------------------------ helpers
 
-static func load_scene(path_in: Variant) -> Variant:
+## Load a scene. With `for_write`, a scene whose scripts do not load or compile
+## is refused rather than loaded without them (see script_guard.gd).
+static func load_scene(path_in: Variant, for_write: bool = false) -> Variant:
 	var path = U.to_res_path(path_in)
 	if U.is_fail(path):
 		return path
@@ -36,9 +39,21 @@ static func load_scene(path_in: Variant) -> Variant:
 	if not FileAccess.file_exists(path):
 		return U.fail("NOT_FOUND", "Scene does not exist: %s" % path)
 	U.register_uid(path)
+	if for_write:
+		var prep := G.prepare(path)
+		if not prep["broken"].is_empty():
+			return G.refusal(path, prep["broken"])
 	var ps = ResourceLoader.load(path, "PackedScene", ResourceLoader.CACHE_MODE_IGNORE)
 	if ps == null or not (ps is PackedScene):
 		return U.fail("OPERATION_FAILED", "Failed to load scene %s (see diagnostics)" % path)
+	if for_write:
+		var builtin := G.broken_builtin_scripts(ps)
+		if not builtin.is_empty():
+			return G.refusal(path, builtin)
+		var binary := G.binary_scripted(path, ps)
+		if not binary.is_empty():
+			return G.binary_refusal(path, binary)
+		G.remember_source(ps, path)
 	return ps
 
 
@@ -264,17 +279,66 @@ static func _pascal(s: String) -> String:
 	return out if not out.is_empty() and out.validate_node_name() == out else "Root"
 
 
-static func save_packed(root: Node, path: String) -> Variant:
+## Pack and save `root`. When `original` (the scene as loaded) is given, the
+## packed result is first checked against it so no script reference or
+## preserved script value is lost (`touched`: see script_guard.touched_by).
+static func save_packed(root: Node, path: String, original: PackedScene = null, touched: Dictionary = {}, dry_run: bool = false) -> Variant:
 	var packed := PackedScene.new()
 	var err := packed.pack(root)
 	if err != OK:
 		return U.godot_error(err, "PackedScene.pack")
+	if original != null and path != G.source_of(original) and not G.source_of(original).is_empty():
+		var uses = _packed_uses(packed, path)
+		if uses != null:
+			return uses
+	if original != null:
+		var lost := G.verify_scene(original, packed, root, touched)
+		if not lost.is_empty():
+			return U.fail("OPERATION_FAILED", "Saving would lose data from the scene (%s), so nothing was written. Make this change in the Godot editor (godot_editor) instead." % lost)
+	var source := G.source_of(original)
+	var had_file := FileAccess.file_exists(path)
+	var previous := FileAccess.get_file_as_bytes(path) if had_file else PackedByteArray()
+	# Compare as text: binary scenes through a temporary text copy. The
+	# baseline was taken when the scene was loaded (see script_guard.text_loss()).
+	var before_text := ""
+	var baseline := ""
+	if not source.is_empty():
+		baseline = G.baseline_of(original)
+		before_text = FileAccess.get_file_as_string(source) if source.get_extension() == "tscn" else baseline
+		if before_text.is_empty():
+			return U.fail("INTERNAL", "Could not read %s for comparison" % source)
+	# The comparison runs before anything is written, so a worker that is
+	# stopped while comparing leaves the file as it was.
+	var checked_text := ""
+	if not before_text.is_empty():
+		var ctx := touched.duplicate()
+		ctx["root"] = root
+		ctx["baseline"] = baseline
+		checked_text = G.text_of(packed, "after")
+		var lost := G.text_loss(before_text, checked_text, ctx) if not checked_text.is_empty() else "the scene could not be written for comparison"
+		if not lost.is_empty():
+			if dry_run:
+				return U.fail("OPERATION_FAILED", "Saving would lose data from the scene (%s). This was a dry run; the real save would be refused. Make this change in the Godot editor (godot_editor) instead." % lost)
+			return U.fail("OPERATION_FAILED", "Saving would lose data from the scene (%s), so nothing was written. Make this change in the Godot editor (godot_editor) instead." % lost)
+	if dry_run:
+		return {"path": path, "dry_run": true}
 	var dir_err := U.ensure_dir_for(path)
 	if dir_err != OK:
 		return U.godot_error(dir_err, "Creating directory for " + path)
 	err = U.save_resource(packed, path)
 	if err != OK:
 		return U.godot_error(err, "ResourceSaver.save(%s)" % path)
+	if not before_text.is_empty() and path.get_extension() == "tscn":
+		# What was written must be what was compared.
+		var after_text := FileAccess.get_file_as_string(path)
+		if G.comparable(after_text) != G.comparable(checked_text):
+			var ctx := touched.duplicate()
+			ctx["root"] = root
+			ctx["baseline"] = baseline
+			var lost := G.text_loss(before_text, after_text, ctx) if not after_text.is_empty() else "the saved scene could not be read back for comparison"
+			if not lost.is_empty():
+				U.restore_file(path, previous, had_file)
+				return U.fail("OPERATION_FAILED", "Saving would lose data from the scene (%s), so nothing was written. Make this change in the Godot editor (godot_editor) instead." % lost)
 	return verify_saved(path)
 
 
@@ -302,7 +366,7 @@ static func scene_create(args: Dictionary) -> Variant:
 		return U.fail("INVALID_ARGUMENT", "Invalid root node name '%s'" % root_name)
 	var inherits = args.get("inherits")
 	if inherits != null and str(inherits) != "":
-		return _create_inherited(path, str(inherits), root_name)
+		return _create_inherited(path, str(inherits), root_name, args.get("properties", {}))
 	var root_type := str(args.get("root_type", "Node2D"))
 	var root = P.create(root_type, "Node")
 	if U.is_fail(root):
@@ -328,13 +392,13 @@ static func scene_create(args: Dictionary) -> Variant:
 ## GEN_EDIT_STATE_MAIN_INHERITED instance flattens it), so the minimal
 ## documented .tscn header is written and Godot then loads, re-packs and
 ## re-saves it in canonical form.
-static func _create_inherited(path: String, base_in: String, root_name: String) -> Variant:
+static func _create_inherited(path: String, base_in: String, root_name: String, props: Variant = {}) -> Variant:
 	var base = U.to_res_path(base_in)
 	if U.is_fail(base):
 		return base
 	if base == path:
 		return U.fail("INVALID_ARGUMENT", "A scene cannot inherit itself")
-	var base_ps = load_scene(base)
+	var base_ps = load_scene(base, true)
 	if U.is_fail(base_ps):
 		return base_ps
 	var uid_attr := ""
@@ -350,31 +414,73 @@ static func _create_inherited(path: String, base_in: String, root_name: String) 
 		return U.godot_error(FileAccess.get_open_error(), "Writing " + path)
 	f.store_string(text)
 	f.close()
-	var ps = load_scene(path)
+	var ps = load_scene(path, true)
 	if U.is_fail(ps):
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 		return ps
 	var root: Node = ps.instantiate(PackedScene.GEN_EDIT_STATE_MAIN)
-	var saved = save_packed(root, path)
+	if root == null:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+		return U.fail("OPERATION_FAILED", "Inherited scene %s could not be instantiated" % path)
+	var touched := {}
+	if typeof(props) == TYPE_DICTIONARY and not (props as Dictionary).is_empty():
+		var applied = _set_props(root, props, {"root": root, "self_path": path})
+		if U.is_fail(applied):
+			root.free()
+			DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+			return applied
+		touched = G.touched_by([{"action": "set_properties", "node": ".", "properties": props}], [{"path": "."}])
+	var saved = save_packed(root, path, ps, touched)
 	root.free()
 	if U.is_fail(saved):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 		return saved
 	saved["inherits"] = base
 	saved["root_type"] = _scene_root_type(base_ps)
 	return saved
 
 
+## Why `target` cannot receive a copy of `source` (null when it can): it exists
+## and overwriting was not asked for, or `source` depends on it (saving there
+## would replace a scene it instances with one that instances itself).
+static func _save_as_target_problem(source: String, target: String, overwrite: bool) -> Variant:
+	if target == source:
+		return null
+	if FileAccess.file_exists(target) and not overwrite:
+		return U.fail("ALREADY_EXISTS", "Target already exists: %s (pass overwrite: true to replace it)" % target)
+	if G.depends_on(source, target):
+		return U.fail("INVALID_ARGUMENT", "%s uses %s (directly or through other files), so it cannot be saved over it" % [source, target])
+	return null
+
+
+## Like _save_as_target_problem() for the scene as edited: whether what
+## `packed` refers to (instances and resources the batch may have added)
+## includes `target` (null when it does not).
+static func _packed_uses(packed: PackedScene, target: String) -> Variant:
+	var text := G.text_of(packed, "deps")
+	if text.is_empty():
+		return U.fail("INTERNAL", "Could not write the scene to check what it uses")
+	for m in RegEx.create_from_string("\\[ext_resource [^\\n]*? path=\"([^\"]+)\"").search_all(text):
+		var dep := m.get_string(1)
+		if dep == target or G.depends_on(dep, target):
+			return U.fail("INVALID_ARGUMENT", "The edited scene uses %s (through %s), so it cannot be saved over it" % [target, dep])
+	return null
+
+
 static func scene_save_as(args: Dictionary) -> Variant:
-	var ps = load_scene(args.get("scene"))
+	var ps = load_scene(args.get("scene"), true)
 	if U.is_fail(ps):
 		return ps
 	var target = U.to_res_path(args.get("new_path", args.get("scene")))
 	if U.is_fail(target):
 		return target
-	if FileAccess.file_exists(target) and target != U.to_res_path(args.get("scene")) and not bool(args.get("overwrite", false)):
-		return U.fail("ALREADY_EXISTS", "Target already exists: %s" % target)
+	var refused = _save_as_target_problem(U.to_res_path(args.get("scene")), target, bool(args.get("overwrite", false)))
+	if refused != null:
+		return refused
 	var root: Node = ps.instantiate(PackedScene.GEN_EDIT_STATE_MAIN)
-	var saved = save_packed(root, target)
+	if root == null:
+		return U.fail("OPERATION_FAILED", "Scene %s could not be instantiated" % args.get("scene"))
+	var saved = save_packed(root, target, ps)
 	root.free()
 	return saved
 
@@ -385,7 +491,7 @@ static func scene_edit(args: Dictionary) -> Variant:
 	var path = U.to_res_path(args.get("scene"))
 	if U.is_fail(path):
 		return path
-	var ps = load_scene(path)
+	var ps = load_scene(path, true)
 	if U.is_fail(ps):
 		return ps
 	var actions = args.get("actions", [])
@@ -401,7 +507,12 @@ static func scene_edit(args: Dictionary) -> Variant:
 		if typeof(a) != TYPE_DICTIONARY:
 			root.free()
 			return U.fail("INVALID_ARGUMENT", "actions[%d] must be an object" % i)
+		var crashes_before := U.worker_crash_count()
 		var r = apply_action(root, a, ctx)
+		# A runtime error in the worker's own code aborts the action function
+		# (it returns null) and may leave it half-applied: fail the whole batch.
+		if r == null or U.worker_crash_count() > crashes_before:
+			r = U.fail("INTERNAL", "the action failed with an internal error (malformed fields? see diagnostics)")
 		if U.is_fail(r):
 			root.free()
 			var e: Dictionary = r[U.ERR_KEY]
@@ -410,18 +521,24 @@ static func scene_edit(args: Dictionary) -> Variant:
 			e["context"]["note"] = "No changes were saved."
 			return r
 		results.append(r)
-	var out := {"actions": results, "dry_run": bool(args.get("dry_run", false))}
-	if not bool(args.get("dry_run", false)):
-		var target = path
-		if args.get("save_as") != null and str(args.get("save_as")) != "":
-			target = U.to_res_path(args.get("save_as"))
-			if U.is_fail(target):
-				root.free()
-				return target
-		var saved = save_packed(root, target)
-		if U.is_fail(saved):
+	var dry := bool(args.get("dry_run", false))
+	var out := {"actions": results, "dry_run": dry}
+	var target = path
+	if args.get("save_as") != null and str(args.get("save_as")) != "":
+		target = U.to_res_path(args.get("save_as"))
+		if U.is_fail(target):
 			root.free()
-			return saved
+			return target
+		var refused = _save_as_target_problem(path, target, bool(args.get("overwrite", false)))
+		if refused != null:
+			root.free()
+			return refused
+	# A dry run goes through the same checks as a save, without writing.
+	var saved = save_packed(root, target, ps, G.touched_by(actions, results), dry)
+	if U.is_fail(saved):
+		root.free()
+		return saved
+	if not dry:
 		out["saved"] = saved
 	out["tree"] = summarize_tree(root, int(args.get("summary_depth", 2)))
 	root.free()
@@ -460,14 +577,22 @@ static func _get_node(root: Node, a: Dictionary, key: String = "node") -> Varian
 ## "" if properties of `n` may be changed (the node is part of the edited
 ## scene, an instance root, or inside an instance with editable children).
 static func editable_reason(root: Node, n: Node) -> String:
-	if n == root or n.owner == root:
-		return ""
-	var inst := n.owner
-	while inst != null and inst != root and inst.owner != root:
-		inst = inst.owner
-	if inst != null and inst != root and root.is_editable_instance(inst):
+	if n == root or n.owner == root or in_editable_instances(root, n):
 		return ""
 	return "node '%s' belongs to an instanced sub-scene; enable editable children on its instance (set_editable_children) or edit the sub-scene file" % U.rel_path(root, n)
+
+
+## Whether every instance `n` lies in (up to `root`) has editable children:
+## each instance's own scene (or the edited one) must make it editable, or
+## what is set on `n` is not saved.
+static func in_editable_instances(root: Node, n: Node) -> bool:
+	var inst := n.owner
+	while inst != null and inst != root:
+		var holder := inst.owner
+		if holder == null or not holder.is_editable_instance(inst):
+			return false
+		inst = holder
+	return inst == root
 
 
 ## "" if the node's structure (existence, name, parent) may be changed.
@@ -489,7 +614,7 @@ static func _set_props(n: Node, props: Variant, ctx: Dictionary) -> Variant:
 	var applied := {}
 	var c := ctx.duplicate()
 	c["node"] = n
-	for k in (props as Dictionary).keys():
+	for k in C.ordered_keys(props):
 		var r = C.set_property(n, str(k), props[k], c)
 		if U.is_fail(r):
 			return r
@@ -559,9 +684,65 @@ static func _remove_node(root: Node, a: Dictionary, ctx: Dictionary) -> Variant:
 		return U.fail("CONFLICT", why)
 	var path := U.rel_path(root, n)
 	var removed := _count(n)
+	# Node-typed values elsewhere that point into the removed nodes would
+	# dangle (and crash the packer): clear them, as the editor does.
+	var cleared := _clear_references(root, n)
 	n.get_parent().remove_child(n)
 	n.free()
-	return {"action": "remove_node", "path": path, "removed_nodes": removed}
+	var out := {"action": "remove_node", "path": path, "removed_nodes": removed}
+	if not cleared.is_empty():
+		out["cleared_references"] = cleared
+	return out
+
+
+## Set stored Node-typed values (and Array/Dictionary elements) of the nodes
+## outside `gone` that point at `gone` or below it to null; returns
+## "node:property" labels of what was cleared.
+static func _clear_references(root: Node, gone: Node) -> Array:
+	var out := []
+	var stack: Array = [root]
+	while not stack.is_empty():
+		var d: Node = stack.pop_back()
+		if d == gone:
+			continue
+		stack.append_array(d.get_children())
+		for p in d.get_property_list():
+			var t := int(p["type"])
+			if not (int(p["usage"]) & PROPERTY_USAGE_STORAGE) or not t in [TYPE_OBJECT, TYPE_ARRAY, TYPE_DICTIONARY]:
+				continue
+			var k := str(p["name"])
+			var v = d.get(k)
+			var hit := false
+			if t == TYPE_OBJECT:
+				if _points_into(v, gone):
+					d.set(k, null)
+					hit = true
+			elif t == TYPE_ARRAY:
+				var arr: Array = v
+				for i in arr.size():
+					if _points_into(arr[i], gone):
+						arr[i] = null
+						hit = true
+				if hit:
+					d.set(k, arr)
+			else:
+				var dict: Dictionary = v
+				for key in dict.keys():
+					if _points_into(key, gone):
+						dict.erase(key)  # (a key cannot be null)
+						hit = true
+					elif _points_into(dict[key], gone):
+						dict[key] = null
+						hit = true
+				if hit:
+					d.set(k, dict)
+			if hit:
+				out.append("%s:%s" % [U.rel_path(root, d), k])
+	return out
+
+
+static func _points_into(v: Variant, gone: Node) -> bool:
+	return typeof(v) == TYPE_OBJECT and is_instance_valid(v) and v is Node and (v == gone or gone.is_ancestor_of(v))
 
 
 static func _count(n: Node) -> int:
@@ -642,7 +823,7 @@ static func _move_node(root: Node, a: Dictionary, ctx: Dictionary) -> Variant:
 	if keep and g != null:
 		var pg = _global_xform(np) if (np is Node2D or np is Node3D) else null
 		n.transform = g if pg == null else pg.affine_inverse() * g
-	return {"action": "move_node", "old_path": old, "path": U.rel_path(root, n)}
+	return {"action": "move_node", "old_path": old, "path": U.rel_path(root, n), "control": n is Control}
 
 
 static func _reorder_node(root: Node, a: Dictionary, ctx: Dictionary) -> Variant:
@@ -668,6 +849,24 @@ static func _map_owners(root: Node, src: Node, dup: Node) -> void:
 		_map_owners(root, s, d)
 
 
+## Node.duplicate() flags that copy instanced scenes the way the editor does:
+## as instances of their scene (with their overrides, editable children and
+## connections), not as plain nodes with the instance's values written inline.
+## The editor flag is not exposed to scripts; it is the bit after the last
+## public DuplicateFlags value in editor builds (DUPLICATE_FROM_EDITOR).
+static func _duplicate_flags() -> int:
+	var flags := int(Node.DUPLICATE_SIGNALS | Node.DUPLICATE_GROUPS | Node.DUPLICATE_SCRIPTS | Node.DUPLICATE_USE_INSTANTIATION)
+	if not OS.has_feature("editor"):
+		return flags
+	var top := 0
+	for c in ClassDB.class_get_enum_constants("Node", "DuplicateFlags", true):
+		if str(c) != "DUPLICATE_DEFAULT":
+			top = maxi(top, ClassDB.class_get_integer_constant("Node", c))
+	# Not DUPLICATE_INTERNAL_STATE: it also copies non-stored properties such as
+	# global_transform, which outside the tree resets a Node3D's transform.
+	return flags | (top << 1)
+
+
 static func _duplicate_node(root: Node, a: Dictionary, ctx: Dictionary) -> Variant:
 	var n = _get_node(root, a)
 	if U.is_fail(n):
@@ -683,7 +882,7 @@ static func _duplicate_node(root: Node, a: Dictionary, ctx: Dictionary) -> Varia
 		if U.is_fail(p):
 			return p
 		parent = p
-	var dup: Node = n.duplicate()
+	var dup: Node = n.duplicate(_duplicate_flags())
 	if a.has("new_name"):
 		var nn := str(a["new_name"])
 		if not U.valid_node_name(nn):
@@ -727,7 +926,7 @@ static func _instantiate_scene(root: Node, a: Dictionary, ctx: Dictionary) -> Va
 		return sp
 	if sp == ctx.get("self_path") or _depends_on(sp, ctx.get("self_path", "")):
 		return U.fail("INVALID_ARGUMENT", "Instancing %s would create a cyclic scene dependency" % sp)
-	var ps = load_scene(sp)
+	var ps = load_scene(sp, true)
 	if U.is_fail(ps):
 		return ps
 	var inst: Node = (ps as PackedScene).instantiate(PackedScene.GEN_EDIT_STATE_INSTANCE)
@@ -786,40 +985,20 @@ static func _attach_script(root: Node, a: Dictionary, ctx: Dictionary) -> Varian
 	var s = ResourceLoader.load(sp, "Script")
 	if s == null or not (s is Script):
 		return U.fail("OPERATION_FAILED", "Script failed to load: %s (see diagnostics%s)" % [sp, "; C# requires the .NET build of Godot" if sp.ends_with(".cs") else ""])
-	var base := str((s as Script).get_instance_base_type())
+	if not (s as Script).can_instantiate():
+		var errors := PO._take_logs().filter(func(d): return d.get("severity") in ["error", "script_error"])
+		return U.fail("OPERATION_FAILED", "Script %s has errors and cannot be attached" % sp, {"diagnostics": errors})
+	var attach: Script = s
+	var base := str(attach.get_instance_base_type())
 	if not base.is_empty() and not n.is_class(base):
 		return U.fail("INVALID_ARGUMENT", "Script %s extends %s but node '%s' is a %s" % [sp, base, U.rel_path(root, n), n.get_class()])
-	var note := ""
-	var attach: Script = s
-	if not (s as Script).can_instantiate():
-		var names := []
-		for al in PO.autoloads():
-			names.append(al["name"])
-		var diags := PO.classify_diagnostics(PO._take_logs(), names)
-		var blocking := diags.filter(func(d): return d.get("severity") in ["error", "script_error"] and not str(d.get("message", "")).begins_with("Failed to load script"))
-		if not blocking.is_empty() or diags.is_empty():
-			return U.fail("OPERATION_FAILED", "Script %s has errors or is abstract and cannot be attached" % sp, {"diagnostics": blocking})
-		# The analyzer accepted the script; only the compile step failed because
-		# autoload singletons are not registered in the headless worker. Attach
-		# it by reference through a compiled stand-in that owns the same path:
-		# the saved scene references the real file, nothing of it executes.
-		var stub := GDScript.new()
-		stub.source_code = "extends %s\n" % (base if not base.is_empty() else n.get_class())
-		if stub.reload() != OK:
-			return U.fail("OPERATION_FAILED", "Could not prepare %s for attachment" % sp)
-		stub.take_over_path(sp)
-		attach = stub
-		note = "The script uses autoload singletons, which cannot be compiled headlessly. It was attached by reference after Godot's analyzer accepted it; its exported properties and methods are not available to later actions in this batch."
 	n.set_script(attach)
 	if n.get_script() != attach:
 		return U.fail("OPERATION_FAILED", "Godot refused to attach %s" % sp)
 	var applied = _set_props(n, a.get("properties"), ctx)
 	if U.is_fail(applied):
 		return applied
-	var out := {"action": "attach_script", "path": U.rel_path(root, n), "script": sp, "properties": applied}
-	if not note.is_empty():
-		out["note"] = note
-	return out
+	return {"action": "attach_script", "path": U.rel_path(root, n), "script": sp, "properties": applied}
 
 
 static func _detach_script(root: Node, a: Dictionary, ctx: Dictionary) -> Variant:
@@ -948,5 +1127,6 @@ static func _set_editable(root: Node, a: Dictionary, ctx: Dictionary) -> Variant
 		return n
 	if n == root or (n as Node).scene_file_path.is_empty() or n.owner != root:
 		return U.fail("INVALID_ARGUMENT", "set_editable_children applies to instanced sub-scene roots of this scene")
+	var was := root.is_editable_instance(n)
 	root.set_editable_instance(n, bool(a.get("editable", true)))
-	return {"action": "set_editable_children", "path": U.rel_path(root, n), "editable": root.is_editable_instance(n)}
+	return {"action": "set_editable_children", "path": U.rel_path(root, n), "editable": root.is_editable_instance(n), "changed": was != root.is_editable_instance(n)}

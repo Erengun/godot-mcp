@@ -246,6 +246,6 @@ describe('Fixture D: existing project preservation', { skip: SKIP_NO_GODOT }, ()
       (r.properties as Record<string, { value: number[] }>).albedo_color!.value.map((x) => Math.round(x * 255)),
       [51, 170, 51, 255],
     );
-    assert.match(readFileSync(join(p.root, 'shared/mat.tres'), 'utf8'), /^\[gd_resource type="StandardMaterial3D" format=3 uid="uid:\/\//);
+    assert.match(readFileSync(join(p.root, 'shared/mat.tres'), 'utf8'), /^\[gd_resource type="StandardMaterial3D" (?:load_steps=\d+ )?format=3 uid="uid:\/\//);
   });
 });
