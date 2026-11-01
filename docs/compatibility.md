@@ -41,3 +41,7 @@
 
 - The live editor bridge cannot tell which open scenes have unsaved changes (Godot 4.7 added that query), so it treats every scene open in the editor as unsaved: headless edits of an open scene are refused (close its tab, or make the change with `godot_editor`), and `reload_scene` needs `discardUnsaved`. `godot_editor status` reports `unsaved_tracking: false`, and `importing` is always `false`.
 - Scene files written by Godot 4.7 contain `unique_id` attributes. How older 4.x versions read files that a newer editor wrote has not been tested.
+
+## Differences on Godot 4.8 (beta)
+
+- A save of an inherited scene (or of a scene with editable instances) no longer stores the copies Godot makes of resources that are local to the scene; copies a file already stores are kept. The headless save check therefore accepts such a gained copy only on Godot 4.5–4.7, where Godot adds it on every save, and on 4.8 refuses it as a value that project code assigned. Saves that Godot 4.7 refused because copies of one resource were made for more than one scene in the file are accepted on 4.8, since nothing is copied.

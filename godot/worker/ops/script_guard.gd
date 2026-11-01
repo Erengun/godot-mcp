@@ -43,7 +43,7 @@ const _STORED_AS := {
 	"basis": {"transform": true, "rotation": true, "quaternion": true},
 	"scale": {"transform": true},
 	"transform": {"position": true, "rotation": true, "scale": true, "skew": true, "quaternion": true, "basis": true},
-	"size": {"offset_right": true, "offset_bottom": true},
+	"size": {"offset_left": true, "offset_top": true, "offset_right": true, "offset_bottom": true},  # which offsets follow depends on grow direction (Godot 4.8+)
 	"anchor_left": {"anchors_preset": true, "offset_left": true, "offset_top": true, "offset_right": true, "offset_bottom": true},
 	"anchor_top": {"anchors_preset": true, "offset_left": true, "offset_top": true, "offset_right": true, "offset_bottom": true},
 	"anchor_right": {"anchors_preset": true, "offset_left": true, "offset_top": true, "offset_right": true, "offset_bottom": true},
@@ -1359,6 +1359,8 @@ static func _defined_value(root: Node, node: Node, k: String) -> Variant:
 static func _local_copy(v: String, defined: Variant, after: Dictionary, exempt: Dictionary, shares: Dictionary, scope: String) -> int:
 	if defined == null or not (defined[0] is Resource) or not (defined[0] as Resource).resource_local_to_scene:
 		return 0
+	if not _saves_local_copies():
+		return 0  # Godot did not make this copy: project code replaced the value
 	var pairs := []
 	if not _same_local_copy(v, defined[0], after, exempt, pairs):
 		return 0
@@ -1369,6 +1371,15 @@ static func _local_copy(v: String, defined: Variant, after: Dictionary, exempt: 
 		if not _pair(shares, p[0], p[1]):
 			return 2
 	return 1
+
+
+## Whether this Godot version stores, in an inherited scene or for an
+## instance, the copies it makes of resources local to the scene. Up to 4.7 it
+## does on every save; from 4.8 it stores only values that are not its own
+## copies, so a copy that a save gains is one that project code assigned.
+static func _saves_local_copies() -> bool:
+	var v := Engine.get_version_info()
+	return int(v.get("major", 4)) == 4 and int(v.get("minor", 0)) < 8
 
 
 ## The scene a node's copies of resources local to a scene are made for, in

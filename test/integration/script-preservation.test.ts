@@ -16,6 +16,37 @@ describe('script preservation', { skip: SKIP_NO_GODOT }, () => {
   let h: Harness;
   let p: { root: string; cleanup: () => void };
   const read = (rel: string) => readFileSync(join(p.root, rel), 'utf8');
+  /**
+   * For a save in which project code changed a resource local to the scene that
+   * an inherited scene does not store yet. Godot up to 4.7 gives the save a copy
+   * of it, so the save is refused (`msg`); from 4.8 the save stores no copy, so
+   * it may succeed, but then nothing but the added node may be written.
+   */
+  const refusedOrNotStored = async (scene: string, added: string, msg: RegExp) => {
+    const before = read(scene);
+    const r = await h.call('godot_scene_edit', { projectPath: p.root, scenePath: scene, actions: [{ action: 'add_node', type: 'Node', name: added }] });
+    if (r.isError) {
+      const e = (r.structuredContent?.error ?? {}) as { code?: string; message?: string };
+      assert.equal(e.code, 'OPERATION_FAILED', JSON.stringify(e));
+      assert.match(e.message ?? '', msg);
+      assert.equal(read(scene), before);
+      return;
+    }
+    const norm = (t: string) =>
+      t
+        .replace(/ uid="[^"]*"/g, '')
+        .replace(/ unique_id=\d+/g, '')
+        .replace(/ index="\d+"/g, '');
+    const old = new Set(norm(before).split('\n'));
+    const extra = norm(read(scene))
+      .split('\n')
+      .filter((l) => l !== '' && !old.has(l));
+    assert.deepEqual(
+      extra.filter((l) => !l.startsWith('[gd_scene ') && !l.startsWith(`[node name="${added}" type="Node" parent="."`)),
+      [],
+      read(scene),
+    );
+  };
 
   const LEVEL = `[gd_scene load_steps=3 format=3]
 
@@ -1306,15 +1337,7 @@ script = ExtResource("3")
       'lts_sh_kid.tscn',
       '[gd_scene format=3]\n\n[ext_resource type="PackedScene" path="res://lts_sh_base.tscn" id="1"]\n\n[node name="K" instance=ExtResource("1")]\n',
     );
-    const shKid = read('lts_sh_kid.tscn');
-    const e4 = await h.fail('godot_scene_edit', {
-      projectPath: p.root,
-      scenePath: 'lts_sh_kid.tscn',
-      actions: [{ action: 'add_node', type: 'Node', name: 'X' }],
-    });
-    assert.equal(e4.code, 'OPERATION_FAILED', JSON.stringify(e4));
-    assert.match(e4.message, /node S: 'material' would be added/);
-    assert.equal(read('lts_sh_kid.tscn'), shKid);
+    await refusedOrNotStored('lts_sh_kid.tscn', 'X', /node S: 'material' would be added/);
     await h.ok('godot_scene_edit', {
       projectPath: p.root,
       scenePath: 'lts_kid.tscn',
@@ -1352,7 +1375,7 @@ script = ExtResource("3")
       '[gd_scene format=3]\n\n[ext_resource type="Script" path="res://lsc_mat.gd" id="1"]\n\n[sub_resource type="CanvasItemMaterial" id="m"]\nresource_local_to_scene = true\nscript = ExtResource("1")\nx = null\n\n[node name="E" type="Node2D"]\n\n[node name="S1" type="Sprite2D" parent="."]\nmaterial = SubResource("m")\n',
     );
     writeFile(p.root, 'lsc_v.tscn', variant('lsc_base.tscn', 'lsc_code.gd'));
-    await refuses('lsc_v.tscn', /node S1: 'material' would be added/);
+    await refusedOrNotStored('lsc_v.tscn', 'Extra', /node S1: 'material' would be added/);
     const shared = (two: boolean) =>
       `[gd_scene format=3]\n\n[sub_resource type="CanvasItemMaterial" id="m1"]\nresource_local_to_scene = true\nblend_mode = 1\n\n${two ? '[sub_resource type="CanvasItemMaterial" id="m2"]\nresource_local_to_scene = true\nblend_mode = 1\n\n' : ''}[node name="E" type="Node2D"]\n\n[node name="S1" type="Sprite2D" parent="."]\nmaterial = SubResource("m1")\n\n[node name="S2" type="Sprite2D" parent="."]\nmaterial = SubResource("${two ? 'm2' : 'm1'}")\n`;
     writeFile(p.root, 'lsh_one.tscn', shared(false));
@@ -1370,26 +1393,38 @@ script = ExtResource("3")
     }
     await h.ok('godot_scene_edit', { projectPath: p.root, scenePath: 'lsh_one_ok.tscn', actions: add });
     await h.ok('godot_scene_edit', { projectPath: p.root, scenePath: 'lsh_two_ok.tscn', actions: add });
-    await refuses('lsh_split.tscn', /node S2: 'material' would change which values share a resource/);
-    await refuses('lsh_join.tscn', /node S2: 'material' would change which values share a resource/);
-    // The saved variant now stores the shared copy itself: setting a value in
-    // it changes it for both nodes, and project code may not split it.
-    assert.equal(read('lsh_one_ok.tscn').match(/\[sub_resource /g)?.length, 1);
-    await h.ok('godot_scene_edit', {
+    // Up to Godot 4.7 a save gives the variant copies of the base's resources
+    // and the copies must be shared as the originals are; from 4.8 the save
+    // gives it none, so a copy it gains is one project code assigned.
+    const unshared = /node S2: 'material' would (?:change which values share a resource|be added)/;
+    await refuses('lsh_split.tscn', unshared);
+    await refuses('lsh_join.tscn', unshared);
+    const copies = read('lsh_one_ok.tscn').match(/\[sub_resource /g)?.length ?? 0;
+    const setBlend = {
       projectPath: p.root,
       scenePath: 'lsh_one_ok.tscn',
       actions: [{ action: 'set_properties', node: 'S1', properties: { 'material:blend_mode': 2 } }],
-    });
-    assert.equal(read('lsh_one_ok.tscn').match(/\[sub_resource /g)?.length, 1);
+    };
+    if (copies === 1) {
+      // The saved variant now stores the shared copy itself: setting a value in
+      // it changes it for both nodes.
+      await h.ok('godot_scene_edit', setBlend);
+      assert.equal(read('lsh_one_ok.tscn').match(/\[sub_resource /g)?.length, 1);
+    } else {
+      // The variant stores no copy, so a sub-path into the base's resource is refused.
+      assert.equal(copies, 0, read('lsh_one_ok.tscn'));
+      assert.equal((await h.fail('godot_scene_edit', setBlend)).code, 'CONFLICT');
+    }
+    // Project code may not split the copy either way.
     writeFile(p.root, 'lsh_pass.gd', ctl('var s2 = get_parent().get_node("S2"); s2.material = s2.material.duplicate()'));
-    await refuses('lsh_one_ok.tscn', /node S2: 'material' would change which values share a resource/, [{ action: 'add_node', type: 'Node', name: 'Extra2' }]);
+    await refuses('lsh_one_ok.tscn', unshared, [{ action: 'add_node', type: 'Node', name: 'Extra2' }]);
     // Copies of one resource for two instances: Godot versions share them differently.
     writeFile(
       p.root,
       'lsh_level.tscn',
       '[gd_scene format=3]\n\n[ext_resource type="PackedScene" path="res://lsh_one.tscn" id="1"]\n\n[node name="L" type="Node2D"]\n\n[node name="A" parent="." instance=ExtResource("1")]\n\n[node name="B" parent="." instance=ExtResource("1")]\n\n[editable path="A"]\n[editable path="B"]\n',
     );
-    await refuses('lsh_level.tscn', /is also copied for another scene in this file/);
+    await refusedOrNotStored('lsh_level.tscn', 'Extra', /is also copied for another scene in this file/);
     // Setting a key of a sub-resource does not let project code replace or
     // unshare that sub-resource (here a setter that makes the material unique).
     writeFile(
